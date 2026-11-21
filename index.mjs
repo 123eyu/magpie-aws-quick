@@ -41,15 +41,15 @@ const BASE = 'https://quick.aws.com/magpie-aws-quick/v1'
 
 const BASE_MODEL = {
   limit: { context: 200000, output: 64000 },
-  // Quick runs its own agent tools server-side; OpenAI-style function calling
-  // is not part of the bidi protocol, so tool_call stays false.
-  tool_call: false,
+  // Quick's own agent tools run server-side; OpenAI-style function calling is
+  // layered on top as a <tool_call> text convention (lib/tools.mjs).
+  tool_call: true,
   api: { url: BASE, npm: '@ai-sdk/openai-compatible' },
   capabilities: {
     temperature: false,
     reasoning: true,
     attachment: false,
-    toolcall: false,
+    toolcall: true,
     input: { text: true, image: false, audio: false, video: false, pdf: false },
     output: { text: true },
     interleaved: false,

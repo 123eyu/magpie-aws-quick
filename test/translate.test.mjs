@@ -59,6 +59,6 @@ test('renderDelta renders only new user/tool content', () => {
   ]
   const out = renderDelta(delta)
   assert.ok(out.includes('next question'))
-  assert.ok(out.includes('[tool_result read]'))
+  assert.ok(out.includes('[tool_result read c1]'))
   assert.ok(out.includes('file body'))
 })

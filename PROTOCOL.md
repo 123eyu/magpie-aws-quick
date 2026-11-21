@@ -186,6 +186,28 @@ inner JSON 顶层字段：`type`、`payload`、`message_id`、`thread_id`、
 服务端按 `thread_id` 持久化会话历史（已实测：同一 thread 第二轮能记住第一轮内容）。
 客户端自选 `thread_id`（插件用 UUID）。复用判定见 README「会话复用怎么判定」。
 
+### 4.6 客户端工具调用（约定模拟）
+
+协议里**没有**客户端工具通道：`tool_start`/`tool_arguments`/`tool_result` 是
+Quick 自有 agent 工具的服务端执行过程，`message_complete.tool_calls` 恒为空。
+渲染端的工具审批/结果回传（`tool_approval`、`{"type":"tool_result",…}`）只服务于
+它自己的工具循环，外部 `user_message` 无法注入一个"待执行的客户端工具调用"。
+
+可行的桥接（插件采用，已实测跑通）：
+
+1. 把 OpenAI `tools[]` + `tool_choice` 渲染成一段 `[Tool-use convention]` 指令，
+   拼进 `user_message.payload.text`（协议没有 system-prompt 通道，只能走正文）。
+   同时置 `web_search_enabled:false`，减少模型调用自带联网工具"抢答"。
+2. 模型把调用输出为纯文本 `<tool_call>{"name":…,"arguments":{…}}</tool_call>`
+   （tag 可能跨 `text_delta` 切分，插件做了 holdback 解析，见 `lib/tools.mjs`）。
+3. 解析结果映射为 OpenAI `tool_calls`；`finish_reason:"tool_calls"`。
+4. 客户端回传 `role:"tool"` 结果 → 渲染为 `[tool_result <name> <id>] <content>`
+   续接同一 thread（delta 里只含新增 tool/user 内容）。
+
+局限：依赖模型遵守约定（`tool_choice:'required'` 实测稳定）；模型也可能无视约定
+直接用自带工具作答（表现为普通文本）；Quick 自带工具的执行结果不映射为
+OpenAI `tool_calls`。
+
 ## 5. agent_mode → 实际模型
 
 | agent_mode | 观测 resolved_model_id |

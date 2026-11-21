@@ -80,10 +80,14 @@ magpie login aws-quick        # keyless：直接探测本地 Quick 登录态
 
 ## 已知限制
 
-- **工具调用不透传**：Quick 的 agent 在服务端自带工具链（浏览器、本地文件、MCP 等），
-  `tool_start`/`tool_result` 等事件是过程信息；OpenAI 风格的 `tools`/`tool_calls`
-  不在该 WS 协议里，插件声明 `tool_call:false`，让 Quick 自己干活、只回最终文本。
-  需要 Agent 级工具编排时请用 Quick 桌面端本身。
+- **工具调用是文本约定模拟**：Quick 的 agent 在服务端自带工具链（浏览器、本地文件、MCP 等），
+  `tool_start`/`tool_result` 等事件由它自己执行、客户端只观测，`message_complete.tool_calls`
+  恒为空。客户端传入的 OpenAI `tools` 通过提示词注入为 `<tool_call>{json}</tool_call>`
+  文本约定，由插件解析成标准 `tool_calls` 返回；`tool` 角色的结果渲染为
+  `[tool_result …]` 续接同一 thread。可靠性取决于模型遵守约定——已实测
+  `tool_choice:'required'` 下 smart/advanced 均能稳定产出；模型偶尔会先用
+  自带工具（如联网搜索）直接作答，此时表现为普通文本回复。
+  Quick 自带工具的执行结果不会映射为 OpenAI `tool_calls`（那是它内部过程）。
 - **图片/附件**：`user_message` 支持 `attachments`，但插件 v1 只渲染文本，
   图片块渲染为 `[image omitted]` 占位。
 - **采样参数**：`temperature` 等不在协议内，传了也会被服务端忽略（`capabilities.temperature:false`）。

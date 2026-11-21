@@ -183,6 +183,140 @@ test('missing messages → 400', async () => {
   assert.equal(res.status, 400)
 })
 
+test('tool_call convention: <tool_call> text becomes OpenAI tool_calls', async () => {
+  const toolFake = await startFakeQuick({
+    script: (p) => {
+      const mid = p.message_id || 'm1'
+      const tid = p.thread_id
+      return [
+        { type: 'message_start', payload: { message_id: mid } },
+        { type: 'text_delta', payload: { delta: 'Checking. <tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>' } },
+        { type: 'message_complete', payload: { text: 'Checking. <tool_call>{"name":"get_weather","arguments":{"city":"Paris"}}</tool_call>', message_id: mid } },
+      ]
+    },
+  })
+  try {
+    const mgr = {
+      ensure: async () => ({
+        outpostId: async () => 'o3',
+        session: async () => ({ ws_host: toolFake.wsHost, id_token: 't', usable_until: Math.floor(Date.now() / 1000) + 600 }),
+      }),
+    }
+    const sessions = createSessionStore()
+    const res = await handleChatCompletions({
+      body: {
+        model: 'smart',
+        messages: [{ role: 'user', content: 'weather in Paris?' }],
+        tools: [{ type: 'function', function: { name: 'get_weather', description: 'w', parameters: { type: 'object' } } }],
+      },
+      outpostMgr: mgr,
+      sessions,
+      options: { identity: 'tool-acct' },
+    })
+    assert.equal(res.status, 200)
+    const j = await res.json()
+    const msg = j.choices[0].message
+    assert.equal(j.choices[0].finish_reason, 'tool_calls')
+    assert.equal(msg.tool_calls.length, 1)
+    assert.equal(msg.tool_calls[0].function.name, 'get_weather')
+    assert.deepEqual(JSON.parse(msg.tool_calls[0].function.arguments), { city: 'Paris' })
+    // the <tool_call> block must not leak into visible content
+    assert.ok(!msg.content.includes('<tool_call>'))
+    assert.ok(msg.content.includes('Checking.'))
+    // upstream text carried the tool preamble
+    const sent = toolFake.state.userMessages.at(-1).payload.text
+    assert.ok(sent.includes('Tool-use convention'))
+    assert.ok(sent.includes('get_weather'))
+
+    // turn 2: client echoes assistant tool_calls + tool result → same thread, delta only
+    const callId = msg.tool_calls[0].id
+    const res2 = await handleChatCompletions({
+      body: {
+        model: 'smart',
+        tools: [{ type: 'function', function: { name: 'get_weather', description: 'w', parameters: { type: 'object' } } }],
+        messages: [
+          { role: 'user', content: 'weather in Paris?' },
+          { role: 'assistant', content: msg.content, tool_calls: msg.tool_calls },
+          { role: 'tool', tool_call_id: callId, content: '{"temp_c":18}' },
+        ],
+      },
+      outpostMgr: mgr,
+      sessions,
+      options: { identity: 'tool-acct' },
+    })
+    assert.equal(res2.status, 200)
+    await res2.json()
+    const msgs = toolFake.state.userMessages
+    assert.equal(msgs.at(-1).threadId, msgs.at(-2).threadId, 'tool-result turn reuses thread')
+    const deltaText = msgs.at(-1).payload.text
+    assert.ok(deltaText.includes('[tool_result'), 'tool result rendered into delta')
+    assert.ok(deltaText.includes(callId))
+    assert.ok(!deltaText.includes('weather in Paris?') || deltaText.includes('[tool_result'))
+  } finally {
+    await toolFake.close()
+  }
+})
+
+test('streaming tool_call emits tool_calls deltas then tool_calls finish', async () => {
+  const f = await startFakeQuick({
+    script: () => [
+      { type: 'text_delta', payload: { delta: 'Let me check. <tool_call>{"name":"f","arguments":{"a":1}}</tool_call>' } },
+      { type: 'message_complete', payload: { text: 'x', tool_calls: [] } },
+    ],
+  })
+  try {
+    const mgr = {
+      ensure: async () => ({
+        outpostId: async () => 'o5',
+        session: async () => ({ ws_host: f.wsHost, id_token: 't', usable_until: Math.floor(Date.now() / 1000) + 600 }),
+      }),
+    }
+    const res = await handleChatCompletions({
+      body: {
+        model: 'fast', stream: true,
+        tools: [{ type: 'function', function: { name: 'f', parameters: { type: 'object' } } }],
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+      outpostMgr: mgr,
+      options: { identity: 'stream-tool-acct' },
+    })
+    assert.equal(res.status, 200)
+    const text = await res.text()
+    assert.ok(text.includes('"tool_calls"'))
+    assert.ok(text.includes('"name":"f"'))
+    assert.ok(text.includes('"finish_reason":"tool_calls"'))
+    assert.ok(!text.includes('<tool_call>')) // markup never leaks into SSE
+    assert.ok(text.trimEnd().endsWith('data: [DONE]'))
+  } finally {
+    await f.close()
+  }
+})
+
+test('tool_choice none suppresses preamble', async () => {
+  const f2 = await startFakeQuick({})
+  try {
+    const mgr = {
+      ensure: async () => ({
+        outpostId: async () => 'o4',
+        session: async () => ({ ws_host: f2.wsHost, id_token: 't', usable_until: Math.floor(Date.now() / 1000) + 600 }),
+      }),
+    }
+    await handleChatCompletions({
+      body: {
+        model: 'fast',
+        tool_choice: 'none',
+        tools: [{ type: 'function', function: { name: 'x', parameters: {} } }],
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+      outpostMgr: mgr,
+      options: { identity: 'none-acct' },
+    }).then((r) => r.json())
+    assert.ok(!f2.state.userMessages.at(-1).payload.text.includes('Tool-use convention'))
+  } finally {
+    await f2.close()
+  }
+})
+
 test('mid-stream error emits an error chunk then DONE', async () => {
   const errFake = await startFakeQuick({
     script: () => [
