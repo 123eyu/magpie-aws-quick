@@ -81,11 +81,13 @@ maps to `thinking_effort`: `off/low/medium/high/max`.
 
 - **magpie** (the OpenCode plugin host).
 - **Amazon Quick desktop app**: installed and **signed in**
-  (`C:\Users\Yon\AppData\Local\Programs\quickwork\` on Windows;
-  `/Applications/Amazon Quick.app` on macOS). The plugin reuses its backend
-  and login state — **the desktop app does not need to stay running**; the
-  session lives in the system credential store and the plugin spawns its own
-  outpost.
+  (`%LOCALAPPDATA%\Programs\quickwork\` on Windows — i.e.
+  `C:\Users\<you>\AppData\Local\Programs\quickwork\`; `/Applications/Amazon Quick.app`
+  on macOS). The plugin resolves the install location itself via env vars —
+  no username is hardcoded anywhere; `agentPath`/`agentZip` options exist for
+  non-standard installs. It reuses the app's backend and login state — **the
+  desktop app does not need to stay running**; the session lives in the
+  system credential store and the plugin spawns its own outpost.
 - **Node ≥ 22**: only needed to run tests; the plugin itself is pure ESM with
   zero third-party dependencies.
 

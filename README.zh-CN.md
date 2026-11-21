@@ -65,9 +65,12 @@ Quick 的 `user_message` 用 `agent_mode` 选择档位，服务端再路由到�
 ### 1. 前提
 
 - **magpie**（OpenCode 插件宿主）。
-- **Amazon Quick 桌面版**：已安装并**登录**（`C:\Users\Yon\AppData\Local\Programs\quickwork\` 下，
-  Windows；macOS 为 `/Applications/Amazon Quick.app`）。插件复用它的后端与登录态，
-  **不需要**桌面端保持运行——登录态存在系统凭据存储里，插件自己会拉起 outpost。
+- **Amazon Quick 桌面版**：已安装并**登录**（Windows 默认装在
+  `%LOCALAPPDATA%\Programs\quickwork\`，即 `C:\Users\<用户名>\AppData\Local\Programs\quickwork\`；
+  macOS 为 `/Applications/Amazon Quick.app`）。插件通过环境变量自行定位安装目录，
+  代码里没有写死任何用户名；非常规安装可用 `agentPath`/`agentZip` 选项指定。
+  插件复用它的后端与登录态，**不需要**桌面端保持运行——登录态存在系统凭据存储里，
+  插件自己会拉起 outpost。
 - **Node ≥ 22**：只在跑测试时需要；插件本身是纯 ESM、无第三方依赖。
 
 ### 2. 安装插件
