@@ -115,3 +115,7 @@ node _research/smoke-plugin.mjs fast   # 真实冒烟（需要本机 Quick 已�
 ## 许可
 
 MIT。Amazon Quick 是 AWS 的产品，本插件与 Amazon/AWS 无隶属关系。
+
+## 社区
+
+有问题、建议，或想一起折腾？欢迎来 **[linux.do](https://linux.do)** 社区交流反馈。
