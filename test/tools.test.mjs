@@ -19,10 +19,10 @@ test('buildToolPreamble embeds specs and forced choice', () => {
   const p = buildToolPreamble(tools, 'required')
   assert.ok(p.includes('<tool_call>{"name":"<tool_name>"'))
   assert.ok(p.includes('- f: d'))
-  assert.ok(p.includes('MUST call at least one'))
+  assert.ok(p.includes('reply with <tool_call> block(s) only'))
   assert.equal(buildToolPreamble([], 'auto'), '')
   const named = buildToolPreamble(tools, { type: 'function', function: { name: 'f' } })
-  assert.ok(named.includes('MUST call the tool "f"'))
+  assert.ok(named.includes('requires the client tool "f"'))
 })
 
 test('parser extracts blocks split across deltas', () => {

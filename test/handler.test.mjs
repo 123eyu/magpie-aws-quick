@@ -225,7 +225,7 @@ test('tool_call convention: <tool_call> text becomes OpenAI tool_calls', async (
     assert.ok(msg.content.includes('Checking.'))
     // upstream text carried the tool preamble
     const sent = toolFake.state.userMessages.at(-1).payload.text
-    assert.ok(sent.includes('Tool-use convention'))
+    assert.ok(sent.includes('Client tool calling'))
     assert.ok(sent.includes('get_weather'))
 
     // turn 2: client echoes assistant tool_calls + tool result → same thread, delta only
@@ -311,7 +311,7 @@ test('tool_choice none suppresses preamble', async () => {
       outpostMgr: mgr,
       options: { identity: 'none-acct' },
     }).then((r) => r.json())
-    assert.ok(!f2.state.userMessages.at(-1).payload.text.includes('Tool-use convention'))
+    assert.ok(!f2.state.userMessages.at(-1).payload.text.includes('Client tool calling'))
   } finally {
     await f2.close()
   }
