@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { textOf, modeFor, effortFor, renderTranscript, renderDelta } from '../lib/translate.mjs'
+import { textOf, modeFor, effortFor, renderTranscript, renderDelta, byteLen, capText, UPSTREAM_TEXT_LIMIT } from '../lib/translate.mjs'
 
 test('textOf handles strings, parts arrays, and junk', () => {
   assert.equal(textOf('hi'), 'hi')
@@ -61,4 +61,73 @@ test('renderDelta renders only new user/tool content', () => {
   assert.ok(out.includes('next question'))
   assert.ok(out.includes('[tool_result read c1]'))
   assert.ok(out.includes('file body'))
+})
+
+test('capText truncates by bytes with marker and respects budget', () => {
+  const s = 'x'.repeat(10 * 1024)
+  const out = capText(s, 4096)
+  assert.ok(byteLen(out) <= 4096)
+  assert.ok(out.endsWith('[truncated]'))
+  assert.equal(capText('short', 4096), 'short')
+  // multi-byte chars: byte budget must hold even for CJK
+  const cjk = capText('汉'.repeat(5000), 4096)
+  assert.ok(byteLen(cjk) <= 4096)
+  assert.ok(cjk.includes('truncated'))
+})
+
+test('renderTranscript drops oldest history first, keeps final user turn', () => {
+  const messages = [
+    { role: 'user', content: 'OLD-QUESTION-' + 'a'.repeat(3000) },
+    { role: 'assistant', content: 'OLD-ANSWER-' + 'b'.repeat(3000) },
+    { role: 'user', content: 'RECENT-' + 'c'.repeat(2000) },
+    { role: 'assistant', content: 'RECENT-ANSWER-' + 'd'.repeat(2000) },
+    { role: 'user', content: 'FINAL-QUESTION' },
+  ]
+  const stats = {}
+  const out = renderTranscript(messages, 'sys', { maxBytes: 8000, stats })
+  assert.ok(stats.truncated)
+  assert.ok(out.endsWith('FINAL-QUESTION')) // current turn never dropped
+  assert.ok(!out.includes('OLD-QUESTION')) // oldest dropped
+  assert.ok(out.includes('RECENT-QUESTION') || out.includes('RECENT-ANSWER') || out.includes('recent'))
+  assert.ok(out.includes('earlier message(s) omitted'))
+  assert.ok(byteLen(out) <= 8000)
+})
+
+test('renderTranscript caps oversized system prompt and user turn', () => {
+  const messages = [{ role: 'user', content: 'u'.repeat(30 * 1024) }]
+  const stats = {}
+  const out = renderTranscript(messages, 's'.repeat(40 * 1024), { maxBytes: UPSTREAM_TEXT_LIMIT, stats })
+  assert.ok(stats.truncated)
+  assert.ok(out.includes('[truncated]'))
+  assert.ok(byteLen(out) <= UPSTREAM_TEXT_LIMIT)
+  assert.ok(out.endsWith('[truncated]')) // user turn itself was capped
+})
+
+test('renderDelta caps oversized tool results per block', () => {
+  const delta = [
+    { role: 'tool', tool_call_id: 'c1', name: 'read', content: 'F'.repeat(30 * 1024) },
+    { role: 'user', content: 'next' },
+  ]
+  const stats = {}
+  const out = renderDelta(delta, { stats })
+  assert.ok(stats.truncated)
+  assert.ok(out.includes('[tool_result read c1]'))
+  assert.ok(out.includes('next'))
+  assert.ok(byteLen(out) < 20 * 1024) // 16KB cap + small user msg
+})
+
+test('renderDelta enforces total byte budget across blocks', () => {
+  const delta = [
+    { role: 'tool', tool_call_id: 'c1', name: 'a', content: 'A'.repeat(10 * 1024) },
+    { role: 'tool', tool_call_id: 'c2', name: 'b', content: 'B'.repeat(10 * 1024) },
+    { role: 'tool', tool_call_id: 'c3', name: 'c', content: 'C'.repeat(10 * 1024) },
+    { role: 'user', content: 'final question' },
+  ]
+  const stats = {}
+  const out = renderDelta(delta, { maxBytes: 20 * 1024, stats })
+  assert.ok(stats.truncated)
+  assert.ok(byteLen(out) <= 20 * 1024 + 64) // + marker overhead
+  assert.ok(out.includes('final question')) // newest block always kept
+  assert.ok(out.includes('earlier message(s) omitted'))
+  assert.ok(!out.includes('[tool_result a c1]')) // oldest dropped
 })

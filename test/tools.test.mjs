@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeTools, buildToolPreamble, createToolCallParser } from '../lib/tools.mjs'
+import { normalizeTools, buildToolPreamble, createToolCallParser, slimSchema } from '../lib/tools.mjs'
+import { byteLen } from '../lib/translate.mjs'
 
 test('normalizeTools keeps only named function tools', () => {
   const tools = normalizeTools([
@@ -23,6 +24,60 @@ test('buildToolPreamble embeds specs and forced choice', () => {
   assert.equal(buildToolPreamble([], 'auto'), '')
   const named = buildToolPreamble(tools, { type: 'function', function: { name: 'f' } })
   assert.ok(named.includes('requires the client tool "f"'))
+})
+
+test('slimSchema strips annotation keywords, keeps structure', () => {
+  const slim = slimSchema({
+    type: 'object',
+    description: 'verbose docs',
+    title: 'T',
+    required: ['a'],
+    properties: {
+      a: { type: 'string', description: 'field doc', enum: ['x', 'y'] },
+      b: { type: 'object', properties: { c: { type: 'number', examples: [1] } } },
+    },
+  })
+  assert.equal(slim.description, undefined)
+  assert.equal(slim.title, undefined)
+  assert.deepEqual(slim.required, ['a'])
+  assert.equal(slim.properties.a.description, undefined)
+  assert.deepEqual(slim.properties.a.enum, ['x', 'y'])
+  assert.equal(slim.properties.b.properties.c.examples, undefined)
+})
+
+test('preamble compacts schema annotations and caps giant schemas', () => {
+  const bigProps = {}
+  for (let i = 0; i < 200; i++) {
+    bigProps[`field_${i}`] = { type: 'string', description: 'd'.repeat(80) }
+  }
+  const tools = normalizeTools([
+    { type: 'function', function: { name: 'small', description: 's', parameters: { type: 'object', properties: { x: { type: 'string', description: 'doc' } } } } },
+    { type: 'function', function: { name: 'huge', description: 'h', parameters: { type: 'object', properties: bigProps, required: ['field_0'] } } },
+  ])
+  const p = buildToolPreamble(tools, 'auto')
+  // small tool keeps its (slimmed) schema incl. type info
+  assert.ok(p.includes('"x":{"type":"string"}'))
+  assert.ok(!p.includes('"doc"')) // property description stripped
+  // huge tool degrades to bare object + required
+  assert.ok(p.includes('"properties":{}'))
+  assert.ok(p.includes('"required":["field_0"]'))
+  assert.ok(!p.includes('field_1'))
+})
+
+test('preamble falls back to name+description when toolset is enormous', () => {
+  const tools = normalizeTools(Array.from({ length: 60 }, (_, i) => ({
+    type: 'function',
+    function: {
+      name: `tool_${i}`,
+      description: `description ${i} `.repeat(30),
+      parameters: { type: 'object', properties: Object.fromEntries(Array.from({ length: 15 }, (_, j) => [`p${j}`, { type: 'string', description: 'x'.repeat(60) }])) },
+    },
+  })))
+  const p = buildToolPreamble(tools, 'auto')
+  assert.ok(byteLen(p) < 45 * 1024)
+  assert.ok(p.includes('parameter schemas omitted'))
+  assert.ok(p.includes('- tool_0:'))
+  assert.ok(!p.includes('"properties"'))
 })
 
 test('parser extracts blocks split across deltas', () => {
