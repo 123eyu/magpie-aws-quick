@@ -1,54 +1,57 @@
-# Amazon Quick 聊天协议（v1.2.4660 实测）
+[English](PROTOCOL.md) | [中文](PROTOCOL.zh-CN.md)
 
-本文档记录插件依赖的线上协议。所有字段均来自对桌面端
-`app.asar`（`dist/main`、`dist/renderer`）的逆向与真实流量抓包。
-敏感值（token、账号 id、tenant url）一律用占位符表示。
+# Amazon Quick Chat Protocol (verified on v1.2.4660)
 
-## 1. 拓扑
+This document records the wire protocol the plugin relies on. All fields come
+from reverse-engineering the desktop `app.asar` (`dist/main`, `dist/renderer`)
+plus live traffic captures. Sensitive values (tokens, account ids, tenant
+URLs) are always placeholders.
+
+## 1. Topology
 
 ```
-magpie ──OpenAI Chat Completions──▶ 插件 fetch
+magpie ──OpenAI Chat Completions──▶ plugin fetch
                                       │ spawn / connect
                                       ▼
                         quickwork-agent --outpost-only  (Python, 127.0.0.1:<port>)
-                          ├─ /health                  公开
+                          ├─ /health                  public
                           ├─ /auth/status             Bearer <instanceToken>
                           ├─ /auth/sncs-session       Bearer <instanceToken>
                           └─ /local/outpost-id        Bearer <instanceToken>
                                       │  id_token + ws_host
                                       ▼
               wss://<ws_host>/streaming/quickwork-chat-bidirectional-stream
-              （qbs-cell…dp.appintegrations.<region>.prod.plato.ai.aws.dev）
+              (qbs-cell…dp.appintegrations.<region>.prod.plato.ai.aws.dev)
 ```
 
-instance token 契约（与 Electron `AgentBridge.pipeToken` 一致）：
-主进程把 token 作为**第一行**写入子进程 stdin，子进程之后所有 `/auth/*`、`/local/*`
-请求都用 `Authorization: Bearer <token>`。
+Instance-token contract (same as Electron `AgentBridge.pipeToken`): the main
+process writes the token as the **first line** of the child's stdin; every
+later `/auth/*` and `/local/*` request uses `Authorization: Bearer <token>`.
 
-## 2. outpost 启动参数
+## 2. Outpost launch arguments
 
 ```
 quickwork-agent(.exe) --outpost-only --manifest desktop --port <port>
 ```
 
-环境变量（插件设置的最小集）：
+Environment variables (the minimal set the plugin sets):
 
-| 变量 | 说明 |
+| Variable | Purpose |
 |---|---|
-| `QUICKWORK_BUILD_STAGE` | `prod`（默认）/ `beta` 等，决定 feature flag 通道 |
+| `QUICKWORK_BUILD_STAGE` | `prod` (default) / `beta` etc.; selects the feature-flag channel |
 | `QUICKWORK_CLOUD_MODE` | `1` |
-| `QUICKWORK_OUTPOST_PORT` | 监听端口 |
-| `QUICKWORK_PROFILE_STAGE` | 同 build stage |
-| `QUICKWORK_USER_DATA_DIR` | 可选；指向 app userData 以复用本地状态 |
+| `QUICKWORK_OUTPOST_PORT` | listen port |
+| `QUICKWORK_PROFILE_STAGE` | same as build stage |
+| `QUICKWORK_USER_DATA_DIR` | optional; points at app userData to reuse local state |
 
-stdout 会打印 `OUTPOST_PORT: <port>`、`LEP_PORT: <port>` 等行。
-`/health` 返回 `{"status":"ok","service":"outpost"}`。
+stdout prints lines like `OUTPOST_PORT: <port>`, `LEP_PORT: <port>`.
+`/health` returns `{"status":"ok","service":"outpost"}`.
 
-## 3. 会话接口
+## 3. Session endpoints
 
 ### `GET /auth/sncs-session`
 
-返回（字段经脱敏）：
+Returns (fields sanitized):
 
 ```json
 {
@@ -60,7 +63,7 @@ stdout 会打印 `OUTPOST_PORT: <port>`、`LEP_PORT: <port>` 等行。
   "aws_account_id": "…",
   "embed_host": "https://quick.aws.com",
   "region": "us-east-1",
-  "usable_until": 1763…,          // epoch 秒；过期需重新获取
+  "usable_until": 1763…,          // epoch seconds; re-fetch after expiry
   "ws_replay_enabled": true
 }
 ```
@@ -71,8 +74,9 @@ stdout 会打印 `OUTPOST_PORT: <port>`、`LEP_PORT: <port>` 等行。
 { "outpostId": "<uuid>" }
 ```
 
-设备/会话复用维度；WS URL 与 `session_connect` 都要带它。
-（另有 `nook-set-outpost-id` IPC 把它推给 renderer 的 invokeAgent 路径。）
+Device/session-reuse dimension; required by both the WS URL and
+`session_connect`. (There is also a `nook-set-outpost-id` IPC that pushes it to
+the renderer's invokeAgent path.)
 
 ## 4. WebSocket
 
@@ -83,26 +87,27 @@ wss://<ws_host>/streaming/quickwork-chat-bidirectional-stream
   ?surfaceType=QUICK_WORK_DESKTOP_WINDOWS
   &token=<id_token URL-encoded>
   &outpostId=<uuid>
-  &workingSessionId=<uuid>          // 每条连接一个
+  &workingSessionId=<uuid>          // one per connection
   &channel=prod                     // app stage
-  [&agentRuntimeArnOverride=…]      // enterprise 路径用，social 不需要
+  [&agentRuntimeArnOverride=…]      // enterprise path only; not needed for social
 ```
 
-social/AIDP 路径**不需要 SigV4 签名**（那是 enterprise provider 的
-`nook-sign-ws-url` IPC 才做的事）。
+The social/AIDP path needs **no SigV4 signing** (that is what the enterprise
+provider's `nook-sign-ws-url` IPC does).
 
-### 4.2 上行帧（client → server）
+### 4.2 Uplink frames (client → server)
 
-WS binary frame，payload 为 UTF-8 JSON：
+WS binary frame; payload is UTF-8 JSON:
 
 ```json
 { "eventType": "rawInputEvent",
   "payload": { "payload": "<base64(utf8(inner JSON))>" } }
 ```
 
-inner JSON 形如 `{"type": "…", "payload": {…}}`。常用类型：
+Inner JSON looks like `{"type": "…", "payload": {…}}`. Common types:
 
-**session_connect**（连接后立即发，等 `session_established`/`connected` 应答后再发消息）：
+**session_connect** (send immediately on connect; wait for the
+`session_established`/`connected` ack before sending messages):
 
 ```json
 { "type": "session_connect",
@@ -110,122 +115,139 @@ inner JSON 形如 `{"type": "…", "payload": {…}}`。常用类型：
                "outpostId": "<uuid>", "appVersion": "1.2.4660" } }
 ```
 
-**user_message**：
+**user_message**:
 
 ```json
 { "type": "user_message",
   "payload": {
     "thread_id": "<client-chosen id, e.g. uuid>",
-    "text": "<整条用户输入>",
+    "text": "<the whole user input>",
     "message_id": "<uuid>",
     "agent_mode": "fast|balanced|smart|advanced",
     "user_timezone": "UTC",
     "user_locale": "en-US",
-    "thinking_effort": "off|low|medium|high|max",   // 可选
-    "chat_agent_id": "…",                            // 可选
-    "project_context": {…}, "attachments": […],     // 可选，插件未用
-    "web_search_enabled": true, …                   // 可选
+    "thinking_effort": "off|low|medium|high|max",   // optional
+    "chat_agent_id": "…",                            // optional
+    "project_context": {…}, "attachments": […],     // optional, unused by plugin
+    "web_search_enabled": true, …                   // optional
   } }
 ```
 
-**ping**（建议 25s 间隔）：
+**ping** (recommended every 25s):
 
 ```json
 { "type": "ping", "payload": { "timestamp": <ms> } }
 ```
 
-### 4.3 下行帧（server → client）
+### 4.3 Downlink frames (server → client)
 
-AWS event-stream 消息（12B prelude + headers + payload + 4B CRC；
-headers 里 `:message-type=event`、`:event-type=rawOutputEvent`、
-`:content-type=application/json`）。body 是 JSON：
+AWS event-stream messages (12-byte prelude + headers + payload + 4-byte CRC;
+headers carry `:message-type=event`, `:event-type=rawOutputEvent`,
+`:content-type=application/json`). The body is JSON:
 
 ```json
 { "payload": "<base64(utf8(inner JSON))>" }
 ```
 
-inner JSON 顶层字段：`type`、`payload`、`message_id`、`thread_id`、
-`scope`（`chat`/`task_lifecycle`…）、`timestamp`、`turn_message_id`。
+Inner-JSON top-level fields: `type`, `payload`, `message_id`, `thread_id`,
+`scope` (`chat`/`task_lifecycle`…), `timestamp`, `turn_message_id`.
 
-观察到的事件类型（节选）：
+Observed event types (excerpt):
 
-| type | 说明 |
+| type | Meaning |
 |---|---|
-| `session_established` | `session_connect` 应答（含 `workingSessionId`、`trace_id`） |
-| `connected` | 会话就绪；`payload.user`/`runtime` 带账号与预热信息（**含 PII，勿落日志**） |
-| `status` | 杂项状态，如 `{"status":"pong"}`、`unknown_message_type` |
-| `message_start` | 一条 assistant 消息开始（`payload.role:"assistant"`） |
-| `text_delta` | `payload.delta` 文本增量（`kernel_thread_id` 在 payload 内） |
-| `thinking_delta` / `thinking_complete` | 推理过程增量 |
-| `tool_start`/`tool_arguments`/`tool_progress`/`tool_result`/`tool_error` | agent 工具过程（服务端执行，客户端只观测） |
-| `turn_usage` | `payload`：`input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_write_tokens`/`total_tokens`/`model`/`resolved_model_id`/`served_model_id`/`cost_usd`/`context_window` |
-| `text_complete` | `payload.text` 本消息全文 |
-| `message_complete` | `payload`：`text`、`tool_calls[]`、`kernel_thread_id`、`initiator`、`continuation_expected?` |
-| `message_split` | 长回复拆分 |
-| `title_generated` | 会话标题 |
-| `runs_updated` / `task_list_update` | run/任务状态噪声（顶层 `thread_id` 为空，`payload.thread_id` 才有值） |
+| `session_established` | ack for `session_connect` (carries `workingSessionId`, `trace_id`) |
+| `connected` | session ready; `payload.user`/`runtime` carry account & warm-up info (**contains PII — do not log**) |
+| `status` | misc status, e.g. `{"status":"pong"}`, `unknown_message_type` |
+| `message_start` | an assistant message begins (`payload.role:"assistant"`) |
+| `text_delta` | `payload.delta` text increment (`kernel_thread_id` inside payload) |
+| `thinking_delta` / `thinking_complete` | reasoning increments |
+| `tool_start`/`tool_arguments`/`tool_progress`/`tool_result`/`tool_error` | agent tool progress (executed server-side; client only observes) |
+| `turn_usage` | `payload`: `input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_write_tokens`/`total_tokens`/`model`/`resolved_model_id`/`served_model_id`/`cost_usd`/`context_window` |
+| `text_complete` | `payload.text` full message text |
+| `message_complete` | `payload`: `text`, `tool_calls[]`, `kernel_thread_id`, `initiator`, `continuation_expected?` |
+| `message_split` | long reply split |
+| `title_generated` | conversation title |
+| `runs_updated` / `task_list_update` | run/task status noise (top-level `thread_id` empty; `payload.thread_id` has the value) |
 | `keepalive` | `{"type":"keepalive","ts":…}` |
-| `error` / `guardrail_blocked` / `stream_truncated` / `turn_aborted` | 异常 |
+| `error` / `guardrail_blocked` / `stream_truncated` / `turn_aborted` | failures |
 
-### 4.4 Turn 结束判定（实测）
+### 4.4 Turn termination (verified)
 
-**没有 `turn_completed` 下行事件**（那是 REST session-store 里的持久化事件类型）。
-一个 user turn 结束的判据与桌面渲染端一致：
+**There is no `turn_completed` downlink event** (that is a persisted event
+type in the REST session store). A user turn ends by the same rule the desktop
+renderer uses:
 
-- `message_complete` 且 `payload.continuation_expected !== true` → 该 turn 最后一条消息完成；
-  agentic 多步 turn 会发多个 `message_start…message_complete` 循环，前面几轮带
-  `continuation_expected:true`；
-- `stream_ended`、`turn_aborted` → 直接终止；
-- `error`/`guardrail_blocked`/`stream_truncated` → 失败。
+- `message_complete` with `payload.continuation_expected !== true` → the last
+  message of the turn is done; agentic multi-step turns emit several
+  `message_start…message_complete` cycles where earlier rounds carry
+  `continuation_expected:true`;
+- `stream_ended`, `turn_aborted` → terminate immediately;
+- `error`/`guardrail_blocked`/`stream_truncated` → failure.
 
-`message_complete`/`text_complete` 的 `payload.text` 是全文兜底；正常情况下
-`text_delta` 已给出全部内容。
+`message_complete`/`text_complete` `payload.text` is a full-text fallback;
+normally `text_delta` already delivered everything.
 
-### 4.5 thread 复用
+### 4.5 Thread reuse
 
-服务端按 `thread_id` 持久化会话历史（已实测：同一 thread 第二轮能记住第一轮内容）。
-客户端自选 `thread_id`（插件用 UUID）。复用判定见 README「会话复用怎么判定」。
+The server persists conversation history by `thread_id` (verified: a second
+turn on the same thread remembers the first). The client picks `thread_id`
+(plugin uses UUIDs). See the README's "thread reuse" section for the reuse
+rule.
 
-### 4.6 客户端工具调用（约定模拟）
+### 4.6 Client tool calls (convention simulation)
 
-协议里**没有**客户端工具通道：`tool_start`/`tool_arguments`/`tool_result` 是
-Quick 自有 agent 工具的服务端执行过程，`message_complete.tool_calls` 恒为空。
-渲染端的工具审批/结果回传（`tool_approval`、`{"type":"tool_result",…}`）只服务于
-它自己的工具循环，外部 `user_message` 无法注入一个"待执行的客户端工具调用"。
+The protocol has **no** client-tool channel: `tool_start`/`tool_arguments`/
+`tool_result` are Quick's own agent tools executing server-side, and
+`message_complete.tool_calls` is always empty. The renderer's tool
+approval/result return (`tool_approval`, `{"type":"tool_result",…}`) only
+serves its own tool loop — an external `user_message` cannot inject a
+"pending client tool call".
 
-可行的桥接（插件采用，已实测跑通）：
+The workable bridge (adopted by the plugin, verified end-to-end):
 
-1. 把 OpenAI `tools[]` + `tool_choice` 渲染成一段 `[Tool-use convention]` 指令，
-   拼进 `user_message.payload.text`（协议没有 system-prompt 通道，只能走正文）。
-   同时置 `web_search_enabled:false`，减少模型调用自带联网工具"抢答"。
-2. 模型把调用输出为纯文本 `<tool_call>{"name":…,"arguments":{…}}</tool_call>`
-   （tag 可能跨 `text_delta` 切分，插件做了 holdback 解析，见 `lib/tools.mjs`）。
-3. 解析结果映射为 OpenAI `tool_calls`；`finish_reason:"tool_calls"`。
-4. 客户端回传 `role:"tool"` 结果 → 渲染为 `[tool_result <name> <id>] <content>`
-   续接同一 thread（delta 里只含新增 tool/user 内容）。
+1. Render OpenAI `tools[]` + `tool_choice` into a `[Tool-use convention]`
+   instruction block appended to `user_message.payload.text` (there is no
+   system-prompt channel, so it has to ride in the body). Also set
+   `web_search_enabled:false` to reduce the model "answering first" with its
+   own web-search tool.
+2. The model emits calls as plain text
+   `<tool_call>{"name":…,"arguments":{…}}</tool_call>` (tags may split across
+   `text_delta`s; the plugin does holdback parsing — see `lib/tools.mjs`).
+3. Parsed results map to OpenAI `tool_calls` with `finish_reason:"tool_calls"`.
+4. Client returns `role:"tool"` results → rendered as
+   `[tool_result <name> <id>] <content>` continuing the same thread (the delta
+   only carries new tool/user content).
 
-局限：依赖模型遵守约定（`tool_choice:'required'` 实测稳定）；模型也可能无视约定
-直接用自带工具作答（表现为普通文本）；Quick 自带工具的执行结果不映射为
-OpenAI `tool_calls`。
+Limits: relies on the model honoring the convention (`tool_choice:'required'`
+verified stable); the model may also ignore it and answer with its own tools
+(shows up as plain text); Quick's built-in tool results are never mapped to
+OpenAI `tool_calls`.
 
-## 5. agent_mode → 实际模型
+## 5. agent_mode → actual model
 
-| agent_mode | 观测 resolved_model_id |
+| agent_mode | observed resolved_model_id |
 |---|---|
 | `fast` | `us.anthropic.claude-haiku-5-5` |
 | `smart` | `us.anthropic.claude-opus-5-5` |
-| `balanced`/`advanced` | 服务端路由；`advanced` 可能归一到 `smart`（渲染端有 feature flag 逻辑） |
+| `balanced`/`advanced` | server-routed; `advanced` may normalize to `smart` (renderer feature-flag logic) |
 
-`turn_usage.model` 回显请求的 mode，`resolved_model_id`/`served_model_id` 是真实模型。
-注意 Quick 的系统提示很大：实测 `input_tokens≈67k`、`cache_read_tokens≈67k`
-（命中 prompt cache），`context_window=1000000`。
+`turn_usage.model` echoes the requested mode; `resolved_model_id`/
+`served_model_id` are the real model. Note Quick's system prompt is large:
+measured `input_tokens≈67k`, `cache_read_tokens≈67k` (prompt-cache hit),
+`context_window=1000000`.
 
-## 6. 已知坑
+## 6. Known pitfalls
 
-- `session_connect` 后要等 `session_established`/`connected` 再发 `user_message`，
-  否则消息可能被丢弃（实测表现为永远无响应）。
-- `user_message` 必须等 outpost 完成首次 agent 同步后云端才回话；
-  outpost 首启有 ~30-60s 的 feature flag/agent reconcile，属正常。
-- sandbox 端口 8768、LEP 端口被占用时 outpost 降级继续运行（只影响本地工具/MCP sandbox，
-  聊天 WS 不受影响）。
-- `connected.payload.user` 含邮箱/姓名/账号 id——**不要打印原始事件**。
+- After `session_connect`, wait for `session_established`/`connected` before
+  sending `user_message`, or the message may be dropped (observed as silence).
+- `user_message` only gets an answer after the outpost finishes its first
+  agent sync; a fresh outpost spends ~30–60s on feature-flag/agent reconcile —
+  that is normal.
+- If sandbox port 8768 or the LEP port is taken, the outpost degrades and keeps
+  running (only affects local tools/MCP sandbox; the chat WS is unaffected).
+- `connected.payload.user` contains email/name/account id — **do not print raw
+  events**.
+- `user_message.text` has a 64 KB cap (the server rejects larger), which the
+  plugin budgets in `lib/translate.mjs`/`lib/tools.mjs`; rendered text always
+  stays <60 KB.

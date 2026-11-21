@@ -9,7 +9,9 @@
     "lib",
     "bin",
     "README.md",
+    "README.zh-CN.md",
     "PROTOCOL.md",
+    "PROTOCOL.zh-CN.md",
     "LICENSE"
   ],
   "scripts": {
