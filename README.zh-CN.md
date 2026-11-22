@@ -36,14 +36,32 @@ Python 后端（`quickwork-agent`，打包在 `resources/agent.zip` 里），以
    上行是 `{"eventType":"rawInputEvent","payload":{"payload":base64(inner JSON)}}` 的
    二进制帧；下行是 AWS event-stream 帧（`:event-type=rawOutputEvent`，body 里同样是
    base64 包的 inner JSON）。每 25s 发 `ping`。
-4. **协议翻译**：OpenAI 的 `messages` 渲染成 Quick 的 `text`（见下）；下行的
-   `text_delta`/`thinking_delta`/`turn_usage`/`message_complete` 转成 OpenAI 的
-   `content`/`reasoning_content`/`usage`。一个 user turn 以 `message_complete`
-   （`continuation_expected !== true`）结束——与桌面渲染端判定一致。
-5. **会话复用（默认开启）**：OpenAI 客户端每次重发完整历史，而 Quick 在服务端按
-   `thread_id` 保存会话。插件哈希缓存"我们回答过的那一刻"的消息链：后续请求如果是
-   前缀延伸，就沿用同一 `thread_id`、只发增量文本；历史被编辑、system prompt/工具/
-   模式变了、缓存过期或用一次即作废时自动新建 thread 并发送完整 transcript。
+4. **协议翻译**：OpenAI 的 `messages` 渲染成 Quick 的 `text`（见下）——
+   例外是 system prompt，它走独立的 `user_message.system_prompt` 字段
+   （已实测生效）；下行的 `text_delta`/`thinking_delta`/`turn_usage`/
+   `message_complete` 转成 OpenAI 的 `content`/`reasoning_content`/`usage`。
+   一个 user turn 以 `message_complete`（`continuation_expected !== true`）
+   结束——与桌面渲染端判定一致。
+5. **会话复用（默认开启）**：基于增量哈希链的精确续接判定——见下文
+   [会话复用](#会话复用thread-reuse)。
+
+### 会话复用（thread reuse）
+
+Quick 在服务端按 `thread_id` 保存会话历史，而 OpenAI 客户端每次请求都重发
+完整 transcript。本插件用精确的续接判定而不是猜测：
+
+- **增量哈希链** —— 每个请求对规范化后的消息列表计算 `h[k] = H(scope,
+  m1…mk)`。命中即表示客户端是在"我们已经回答过的会话"上追加了新消息，
+  于是只把新增的尾部（user turn / tool result）发给上游；更早的历史由
+  Quick 服务端保存，prompt cache 也保持命中。
+- **scope 隔离** —— 哈希链按 `H(账号, agent_mode, thinking_effort,
+  system prompt, 工具名集合)` 命名空间隔离：换账号、换模型、换推理强度、
+  改 system prompt 或工具集，都会透明地新建 thread，而不是续接到一个
+  不匹配的旧会话。
+- **编辑/分叉检测** —— 更早消息的任何改动都会改变哈希，所以被编辑或
+  分叉的历史永远不会误续接；只有纯追加的尾部才合格。缓存条目使用即
+  销毁（single-use），客户端重试也不会重放一个 turn。
+- **有界内存** —— 条目 30 分钟过期，LRU 上限 200 个 thread；不落盘。
 
 ### 模型：agent_mode，不是模型 id
 
@@ -116,8 +134,9 @@ magpie login aws-quick        # 按提示选择登录方式
 - **采样参数**：`temperature` 等不在协议内，传了也会被服务端忽略（`capabilities.temperature:false`）。
 - **会话与账号绑定**：thread 复用的 scope 里包含账号身份哈希；换号后旧 thread 自动失效重建。
 - **多窗口/并发**：同一 QuickSocket 上不同 thread 可并行 turn；同一 thread 的并发请求会被拒绝（`busy`）。
-- **消息体积**：`user_message.text` 服务端上限 64KB。超大 system prompt / 工具 schema /
-  会话历史会自动压缩（schema 去注解、历史从旧到新裁、tool_result 封顶），截断时
+- **消息体积**：整个 `user_message` 帧服务端上限 64KB（`text` 与
+  `system_prompt` 共享）。超大 system prompt / 工具 schema / 会话历史会自动
+  压缩（schema 去注解、历史从旧到新裁、tool_result 封顶），截断时
   回复里会带 `> [quick] …已截断` 提示。
 - **OAuth 登录仅限 consumer/social 通道**：重放的是桌面端 `quick.aws.com/sn`
   的 `social` provider 流程。走企业 IdP 的租户如果 issuer 不是 Amazon 社交 IdP

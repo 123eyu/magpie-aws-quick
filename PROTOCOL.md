@@ -122,6 +122,7 @@ Inner JSON looks like `{"type": "…", "payload": {…}}`. Common types:
   "payload": {
     "thread_id": "<client-chosen id, e.g. uuid>",
     "text": "<the whole user input>",
+    "system_prompt": "<optional per-turn system override>",  // verified live
     "message_id": "<uuid>",
     "agent_mode": "fast|balanced|smart|advanced",
     "user_timezone": "UTC",
@@ -248,6 +249,7 @@ measured `input_tokens≈67k`, `cache_read_tokens≈67k` (prompt-cache hit),
   running (only affects local tools/MCP sandbox; the chat WS is unaffected).
 - `connected.payload.user` contains email/name/account id — **do not print raw
   events**.
-- `user_message.text` has a 64 KB cap (the server rejects larger), which the
-  plugin budgets in `lib/translate.mjs`/`lib/tools.mjs`; rendered text always
-  stays <60 KB.
+- The whole `user_message` frame has a 64 KB cap (the server rejects larger
+  with `FrameTooLarge`; verified that `text` + `system_prompt` share it),
+  which the plugin budgets in `lib/handler.mjs`/`lib/translate.mjs`/
+  `lib/tools.mjs`; rendered text always stays <60 KB.

@@ -119,6 +119,7 @@ inner JSON 形如 `{"type": "…", "payload": {…}}`。常用类型：
   "payload": {
     "thread_id": "<client-chosen id, e.g. uuid>",
     "text": "<整条用户输入>",
+    "system_prompt": "<可选的逐轮 system 覆盖>",        // 已实测生效
     "message_id": "<uuid>",
     "agent_mode": "fast|balanced|smart|advanced",
     "user_timezone": "UTC",
@@ -231,5 +232,7 @@ OpenAI `tool_calls`。
 - sandbox 端口 8768、LEP 端口被占用时 outpost 降级继续运行（只影响本地工具/MCP sandbox，
   聊天 WS 不受影响）。
 - `connected.payload.user` 含邮箱/姓名/账号 id——**不要打印原始事件**。
-- `user_message.text` 有 64KB 上限（服务端拒发更大的），插件在
-  `lib/translate.mjs`/`lib/tools.mjs` 里做了尺寸预算；渲染文本始终 <60KB。
+- 整个 `user_message` 帧有 64KB 上限（超限服务端拒发 `FrameTooLarge`；
+  已实测 `text` 与 `system_prompt` 共享该预算），插件在
+  `lib/handler.mjs`/`lib/translate.mjs`/`lib/tools.mjs` 里做了尺寸预算；
+  渲染文本始终 <60KB。

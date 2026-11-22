@@ -48,17 +48,37 @@ What the plugin does:
    downlink frames are AWS event-stream messages (`:event-type=rawOutputEvent`,
    body likewise base64-wrapped inner JSON). A `ping` goes out every 25s.
 4. **Protocol translation**: OpenAI `messages` are rendered into Quick's
-   `text` (below); downlink `text_delta`/`thinking_delta`/`turn_usage`/
-   `message_complete` become OpenAI `content`/`reasoning_content`/`usage`.
-   A user turn ends at `message_complete` with
-   `continuation_expected !== true` — the same rule the desktop renderer uses.
-5. **Thread reuse (on by default)**: OpenAI clients resend the full history
-   every request, while Quick keeps conversations server-side by `thread_id`.
-   The plugin hash-caches the message chain "as of our last reply": if a later
-   request is a prefix extension it reuses the same `thread_id` and sends only
-   the delta; when history is edited, the system prompt/tools/mode change, the
-   cache expires, or a thread is single-use, it transparently starts a new
-   thread with the full transcript.
+   `text` (below) — except the system prompt, which rides the dedicated
+   `user_message.system_prompt` field (verified live); downlink
+   `text_delta`/`thinking_delta`/`turn_usage`/`message_complete` become
+   OpenAI `content`/`reasoning_content`/`usage`. A user turn ends at
+   `message_complete` with `continuation_expected !== true` — the same
+   rule the desktop renderer uses.
+5. **Thread reuse (on by default)**: exact continuation tracking over an
+   incremental hash chain — see [Thread reuse](#thread-reuse) below.
+
+### Thread reuse
+
+Quick keeps conversation history server-side per `thread_id`, but OpenAI
+clients resend the entire transcript on every request. This plugin tracks
+continuations exactly instead of guessing:
+
+- **Incremental hash chain** — each request computes `h[k] = H(scope,
+  m1…mk)` over the canonically rendered message list. A cache hit means
+  the client appended to a conversation we already answered, so only the
+  new tail (user turns / tool results) goes upstream; Quick's server-side
+  history supplies the rest and its prompt cache stays warm.
+- **Scope isolation** — the chain is namespaced by
+  `H(account, agent_mode, thinking_effort, system prompt, tool names)`:
+  switching accounts, models, effort, system prompt, or the toolset
+  starts a fresh thread rather than resuming a stale one.
+- **Edit & branch detection** — any change to earlier messages alters the
+  hashes, so edited or branched history can never silently continue a
+  thread that doesn't match; only append-only tails qualify. Cached
+  entries are claimed on use (single-use), so a client retry cannot
+  replay a turn.
+- **Bounded memory** — entries expire after 30 minutes and the store is
+  LRU-capped at 200 threads; nothing touches disk.
 
 ### Models: agent_mode, not model ids
 
@@ -149,10 +169,11 @@ magpie login aws-quick        # pick a sign-in method when prompted
   local-credentials method on a machine with the app installed instead. The
   OAuth path also runs with an empty `outpostId` (accepted server-side), so
   any future feature the server ties to a real device id won't apply.
-- **Message size**: `user_message.text` is hard-capped at 64 KB server-side.
-  Oversized system prompts / tool schemas / history are compacted
-  automatically (schema de-annotation, oldest-first history trimming, capped
-  tool results); truncation is surfaced as a `> [quick] …truncated` note.
+- **Message size**: the whole `user_message` frame is hard-capped at 64 KB
+  server-side (`text` + `system_prompt` share it). Oversized system prompts /
+  tool schemas / history are compacted automatically (schema de-annotation,
+  oldest-first history trimming, capped tool results); truncation is surfaced
+  as a `> [quick] …truncated` note.
 
 ## Security & credentials
 

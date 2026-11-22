@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { startFakeQuick, defaultScript } from './helpers/fake-quick.mjs'
 import { handleChatCompletions, handleModels } from '../lib/handler.mjs'
 import { createSessionStore } from '../lib/sessions.mjs'
+import { byteLen } from '../lib/translate.mjs'
 import { OutpostError } from '../lib/outpost.mjs'
 
 let fake
@@ -98,7 +99,7 @@ test('agent_mode is sent per request model; unknown models default to smart', as
   assert.ok(msgs.at(-1).payload.thread_id)
 })
 
-test('system prompt and history are rendered into the first user_message', async () => {
+test('system prompt rides the system_prompt field; history renders into text', async () => {
   await req({
     model: 'fast',
     messages: [
@@ -109,10 +110,34 @@ test('system prompt and history are rendered into the first user_message', async
     ],
   })
   const p = fake.state.userMessages.at(-1).payload
-  assert.ok(p.text.includes('[system instructions]\nbe terse'))
+  assert.equal(p.system_prompt, 'be terse')
+  assert.ok(!p.text.includes('[system instructions]'))
   assert.ok(p.text.includes('user: q1'))
   assert.ok(p.text.includes('assistant: a1'))
   assert.ok(p.text.endsWith('\n\nq2'))
+})
+
+test('no system_prompt field when the request has no system messages', async () => {
+  await req({ model: 'fast', messages: [{ role: 'user', content: 'plain' }] })
+  const p = fake.state.userMessages.at(-1).payload
+  assert.equal(p.system_prompt, undefined)
+})
+
+test('system prompt shares the 64KB frame budget with text', async () => {
+  const bigSys = 'S'.repeat(40 * 1024) // over SYSTEM_PROMPT_CAP → capped at 32KB
+  const bigUser = 'U'.repeat(30 * 1024)
+  await req({
+    model: 'fast',
+    messages: [
+      { role: 'system', content: bigSys },
+      { role: 'user', content: bigUser },
+    ],
+  })
+  const p = fake.state.userMessages.at(-1).payload
+  // system_prompt capped at 32KB; text+preamble must leave the frame under cap
+  assert.ok(byteLen(p.system_prompt) <= 32 * 1024 + 64)
+  assert.ok(p.system_prompt.endsWith('…[truncated]'))
+  assert.ok(byteLen(p.text) <= 60 * 1024 - byteLen(p.system_prompt))
 })
 
 test('thread reuse: extended conversation continues the same thread with delta only', async () => {
