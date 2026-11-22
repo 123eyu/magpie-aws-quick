@@ -2,7 +2,7 @@
 
 # magpie-aws-quick — Use your own Amazon Quick (AWS Quick) account in magpie
 
-Turns **your own** Amazon Quick desktop login into a [magpie](https://github.com/yetone/magpie)
+Turns **your own** Amazon Quick sign-in (browser OAuth or desktop login) into a [magpie](https://github.com/yetone/magpie)
 provider (`aws-quick`), so agents routed through magpie — Claude Code, Codex,
 Gemini CLI, OpenCode, etc. — can use the models behind Quick
 (see `magpie models | grep aws-quick`).
@@ -80,14 +80,20 @@ maps to `thinking_effort`: `off/low/medium/high/max`.
 ### 1. Requirements
 
 - **magpie** (the OpenCode plugin host).
-- **Amazon Quick desktop app**: installed and **signed in**
-  (`%LOCALAPPDATA%\Programs\quickwork\` on Windows — i.e.
-  `C:\Users\<you>\AppData\Local\Programs\quickwork\`; `/Applications/Amazon Quick.app`
-  on macOS). The plugin resolves the install location itself via env vars —
-  no username is hardcoded anywhere; `agentPath`/`agentZip` options exist for
-  non-standard installs. It reuses the app's backend and login state — **the
-  desktop app does not need to stay running**; the session lives in the
-  system credential store and the plugin spawns its own outpost.
+- **One of two sign-in paths** (pick at `magpie login`):
+  - **Browser OAuth** — nothing else needed. The plugin replays the app's own
+    OIDC+PKCE login in your browser and chats on the stored token directly.
+    Works on machines without the desktop app, and without administrator rights.
+  - **Local credentials** — the Amazon Quick **desktop app** installed and
+    **signed in** (`%LOCALAPPDATA%\Programs\quickwork\` on Windows — i.e.
+    `C:\Users\<you>\AppData\Local\Programs\quickwork\`; `/Applications/Amazon Quick.app`
+    on macOS). On Windows the plugin reads the app's stored session directly
+    from Credential Manager — **no agent.exe, no outpost** while the token is
+    fresh; expiry is covered by OIDC refresh with write-back so the desktop
+    app keeps working. On other platforms (or if the read fails) it falls
+    back to spawning the bundled `quickwork-agent --outpost-only`, which
+    reuses the app's login state — **the desktop app does not need to stay
+    running**; the session lives in the OS credential store.
 - **Node ≥ 22**: only needed to run tests; the plugin itself is pure ESM with
   zero third-party dependencies.
 
@@ -95,12 +101,25 @@ maps to `thinking_effort`: `off/low/medium/high/max`.
 
 ```bash
 magpie plugin add <this directory or git URL>
-magpie login aws-quick        # keyless: probes the local Quick session directly
+magpie login aws-quick        # pick a sign-in method when prompted
 ```
 
-Login starts the outpost and calls `/auth/sncs-session` to verify the session;
-if the desktop app isn't signed in you'll get a clear error telling you to log
-in first.
+**Sign-in methods**
+
+- **账号登录（Browser OAuth）**: opens `quick.aws.com/sn`, waits on a localhost
+  callback, performs client registration + code exchange itself, then stores
+  `{jwt, ws_host, refresh_token, …}` in
+  `%APPDATA%\magpie-aws-quick\oauth-sessions.json` (Windows) /
+  `~/.config/magpie-aws-quick/` (Linux) /
+  `~/Library/Application Support/magpie-aws-quick/` (macOS), mode `0600`.
+  The ~1-hour id_token is auto-refreshed via the stored refresh token
+  (rotation persisted). No outpost is spawned at request time — the chat
+  WebSocket goes straight to the tenant's `ws_host`.
+- **本地凭据（Local credentials）**: on Windows reads the app's session from
+  Credential Manager and chats directly (OIDC auto-refresh, write-back keeps
+  the app's tokens valid); elsewhere or on failure it boots the bundled
+  outpost and calls `/auth/sncs-session` — a clear error tells you to sign in
+  to the app first if it isn't.
 
 ## Known limitations
 
@@ -124,6 +143,12 @@ in first.
   identity hash; switching accounts transparently invalidates old threads.
 - **Concurrency**: different threads can run turns in parallel on one
   QuickSocket; concurrent requests on the same thread are rejected (`busy`).
+- **OAuth sign-in is consumer/social only**: it replays the desktop app's
+  `quick.aws.com/sn` flow (`social` provider). Enterprise-IdP tenants whose
+  issuer is not the Amazon social IdP may not complete this flow — use the
+  local-credentials method on a machine with the app installed instead. The
+  OAuth path also runs with an empty `outpostId` (accepted server-side), so
+  any future feature the server ties to a real device id won't apply.
 - **Message size**: `user_message.text` is hard-capped at 64 KB server-side.
   Oversized system prompts / tool schemas / history are compacted
   automatically (schema de-annotation, oldest-first history trimming, capped
@@ -133,8 +158,16 @@ in first.
 
 - The instance token is randomly generated per launch and passed to the child
   **only** via stdin — never written to disk or logs.
-- `id_token`/`ws_host`/`actor_arn` etc. live only in memory; session-cache keys
-  store hashes only.
+- On the local-credentials path, `id_token`/`ws_host`/`actor_arn` etc. live
+  only in memory; session-cache keys store hashes only.
+- On the OAuth path, `{jwt, refresh_token, client_secret, …}` is persisted in
+  `oauth-sessions.json` (mode `0600`) — unavoidable for refresh-token
+  rotation, equivalent to the desktop app keeping its sign-in in the OS
+  credential store. Protect your user profile accordingly.
+- The Credential-Manager path only **reads** the session the app already
+  stored; on refresh it **writes the new tokens back to the same credential**
+  (including the `session@` twin) so the desktop app always sees valid
+  tokens — equivalent to the app refreshing early on our behalf.
 - Every outpost `/auth/*` endpoint requires
   `Authorization: Bearer <instance token>`; `/health` is the only public one.
 - The plugin never modifies any Amazon Quick files; `agent.zip` is extracted

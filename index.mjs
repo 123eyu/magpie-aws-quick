@@ -5,11 +5,16 @@
  * the loader's fetch answers them by driving the same bidi WebSocket the desktop
  * client uses (see lib/quickws.mjs + lib/handler.mjs).
  *
- * Sign-in is keyless: the plugin spawns (or reuses) the Quick desktop app's own
- * bundled backend — `quickwork-agent --outpost-only`, extracted from the app's
- * agent.zip or already unpacked under the app's userData dir — and reads the
- * session it holds in the OS credential store. You must be signed in to Amazon
- * Quick in the desktop app first; there is no API key to paste.
+ * Two keyless sign-in methods:
+ *   1. Browser OAuth (default choice, no desktop app): replays the app's own
+ *      OIDC+PKCE flow — opens quick.aws.com/sn, catches the localhost callback,
+ *      registers a dynamic OIDC client, exchanges the code, reads user-info —
+ *      then chats over the stored token directly with auto-refresh.
+ *   2. Local credentials: on Windows reads the desktop app's stored session
+ *      straight from Credential Manager (refresh via OIDC, written back so the
+ *      app keeps working); otherwise spawns the bundled agent's
+ *      `quickwork-agent --outpost-only` and reuses its sign-in via
+ *      /auth/sncs-session. Needs the desktop app installed + signed in.
  *
  * Options (magpie plugin options aws-quick '{…}'), all optional:
  *   agentPath    explicit path to quickwork-agent(.exe)
@@ -25,6 +30,10 @@
  *   sessionReuse continue Quick threads across turns (default true)
  *   sessionTtlMs forget a cached thread state after this long unused (default 1800000)
  *   sessionMax   at most this many cached thread states (default 200)
+ *   sessionDir   where OAuth sessions are stored (default: platform config dir)
+ *   oauthPort    fixed localhost callback port for OAuth login (default: free port)
+ *   oauthTimeoutMs how long to wait for the browser login (default 600000)
+ *   openBrowser  function(url) to open the sign-in page (default: OS default)
  *   log          function(line) for plugin diagnostics
  *
  * Models are Quick's agent modes, not raw model ids:
@@ -34,6 +43,11 @@ import { createOutpostManager } from './lib/outpost.mjs'
 import { handleChatCompletions, handleModels } from './lib/handler.mjs'
 import { createSessionStore, SESSION_DEFAULTS } from './lib/sessions.mjs'
 import { MODELS } from './lib/translate.mjs'
+import {
+  createSessionStore as createOAuthStore, createDirectBackend,
+  runOAuthLogin, keyForSession, OAuthError,
+} from './lib/oauth.mjs'
+import { createCredManBackend, loadCredManSession } from './lib/credman.mjs'
 
 const PROVIDER = 'aws-quick'
 // Requests never reach this address: the loader's fetch intercepts them.
@@ -154,14 +168,61 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
       maxConcurrency: 1,
       methods: [
         {
-          // No prompts and no key field: magpie calls authorize directly, which
-          // boots the bundled outpost and checks whether the desktop app's
-          // sign-in is visible to it.
+          // Browser OAuth sign-in: the plugin opens quick.aws.com/sn, waits on a
+          // localhost callback, completes OIDC+PKCE itself and stores the
+          // session + refresh token in a private config file. No desktop app,
+          // no outpost needed at request time.
           type: 'api',
           keyless: true,
-          label: '本地获取（Amazon Quick 桌面端登录态）',
-          labels: { zh: '本地获取（Amazon Quick 桌面端登录态）', 'zh-TW': '本機獲取（Amazon Quick 桌面端登錄態）' },
-          authorize: async () => {
+          label: '账号登录（浏览器 OAuth，无需桌面端）',
+          labels: { zh: '账号登录（浏览器 OAuth，无需桌面端）', 'zh-TW': '帳號登錄（瀏覽器 OAuth，無需桌面端）', en: 'Browser sign-in (OAuth, no desktop app)' },
+          authorize: async (_inputs, { signal } = {}) => {
+            try {
+              const sess = await runOAuthLogin({
+                stage: opts.buildStage || 'prod',
+                port: Number(opts.oauthPort) || undefined,
+                timeoutMs: Number(opts.oauthTimeoutMs) || undefined,
+                signal,
+                fetchImpl: opts.fetchImpl,
+                openBrowser: opts.openBrowser,
+                log: opts.log,
+              })
+              const store = createOAuthStore({ dir: opts.sessionDir })
+              const key = keyForSession(sess)
+              store.set(key, sess)
+              const who = sess.email || sess.display_name || sess.aws_account_id || ''
+              return { type: 'success', key, metadata: { mode: 'oauth', account: who } }
+            } catch (e) {
+              const msg = String(e?.message ?? e)
+              if (e instanceof OAuthError && e.kind === 'abort') return { type: 'failed', error: '登录已取消' }
+              return { type: 'failed', error: `Amazon Quick 账号登录失败：${msg.slice(0, 300)}` }
+            }
+          },
+        },
+        {
+          // No prompts and no key field: magpie calls authorize directly.
+          // On Windows we first try reading the app's session straight from
+          // Credential Manager — that path needs no agent.exe at all while
+          // the stored access token is fresh (OIDC refresh covers expiry).
+          // Otherwise fall back to spawning the bundled outpost.
+          type: 'api',
+          keyless: true,
+          label: '本地凭据（Amazon Quick 桌面端登录态）',
+          labels: { zh: '本地凭据（Amazon Quick 桌面端登录态）', 'zh-TW': '本機憑據（Amazon Quick 桌面端登錄態）' },
+          authorize: async (_inputs, { signal } = {}) => {
+            if (process.platform === 'win32') {
+              try {
+                const sess = await loadCredManSession()
+                if (sess?.jwt) {
+                  // Exercise the real path once: fresh token returns as-is,
+                  // expired token triggers OIDC refresh + credman write-back.
+                  const backend = createCredManBackend({ fetchImpl: opts.fetchImpl, log: opts.log })
+                  await backend.session()
+                  const who = sess.email || sess.display_name || sess.aws_account_id || ''
+                  return { type: 'success', key: 'aws-quick-local', metadata: { mode: 'local-credman', account: who } }
+                }
+              } catch {}
+            }
             try {
               const outpost = await outpostMgr.ensure()
               const st = await outpost.status()
@@ -171,7 +232,7 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
               // Force a session mint now so sign-in problems surface here, not
               // on the first chat request.
               await outpost.session({ fresh: true })
-              return { type: 'success', key: 'aws-quick-local' }
+              return { type: 'success', key: 'aws-quick-local', metadata: { mode: 'local-outpost' } }
             } catch (e) {
               return {
                 type: 'failed',
@@ -185,6 +246,26 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
         const auth = await getAuth()
         const key = auth?.type === 'api' ? auth.key : undefined
         if (!key) return {}
+        // OAuth-provisioned account: chat over the stored token directly, no
+        // outpost spawn. Session file handles refresh-token rotation.
+        if (auth?.metadata?.mode === 'oauth') {
+          const store = createOAuthStore({ dir: opts.sessionDir })
+          const backend = createDirectBackend({
+            load: () => store.get(key),
+            persist: (s) => store.set(key, s),
+            fetchImpl: opts.fetchImpl,
+            log: opts.log,
+          })
+          const mgr = { ensure: () => backend.ensure() }
+          return { baseURL: BASE, apiKey: 'aws-quick-oauth', fetch: makeFetch(mgr, { ...opts, identityKey: key }, sessions) }
+        }
+        // Credential-Manager session (Windows): same direct-WS path, tokens
+        // refreshed via OIDC and written back to the app's own credential.
+        if (auth?.metadata?.mode === 'local-credman') {
+          const backend = createCredManBackend({ fetchImpl: opts.fetchImpl, log: opts.log })
+          const mgr = { ensure: () => backend.ensure() }
+          return { baseURL: BASE, apiKey: 'aws-quick-local', fetch: makeFetch(mgr, { ...opts, identityKey: key }, sessions) }
+        }
         return { baseURL: BASE, apiKey: 'aws-quick-local', fetch: makeFetch(outpostMgr, { ...opts, identityKey: key }, sessions) }
       },
     },

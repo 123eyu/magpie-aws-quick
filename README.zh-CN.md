@@ -2,7 +2,7 @@
 
 # magpie-aws-quick —— 在 magpie 里用你自己的 Amazon Quick（AWS Quick）账号
 
-把**你自己**的 Amazon Quick 桌面端登录态接成 [magpie](https://github.com/yetone/magpie) 的一个 provider（`aws-quick`），
+把**你自己**的 Amazon Quick 登录态（浏览器 OAuth 或桌面端）接成 [magpie](https://github.com/yetone/magpie) 的一个 provider（`aws-quick`），
 这样经 magpie 路由的 Claude Code、Codex、Gemini CLI、OpenCode 等 Agent 都能用上 Quick 背后的模型
 （以 `magpie models | grep aws-quick` 列出的为准）。
 
@@ -65,23 +65,41 @@ Quick 的 `user_message` 用 `agent_mode` 选择档位，服务端再路由到�
 ### 1. 前提
 
 - **magpie**（OpenCode 插件宿主）。
-- **Amazon Quick 桌面版**：已安装并**登录**（Windows 默认装在
-  `%LOCALAPPDATA%\Programs\quickwork\`，即 `C:\Users\<用户名>\AppData\Local\Programs\quickwork\`；
-  macOS 为 `/Applications/Amazon Quick.app`）。插件通过环境变量自行定位安装目录，
-  代码里没有写死任何用户名；非常规安装可用 `agentPath`/`agentZip` 选项指定。
-  插件复用它的后端与登录态，**不需要**桌面端保持运行——登录态存在系统凭据存储里，
-  插件自己会拉起 outpost。
+- **两种登录方式任选其一**（`magpie login` 时选择）：
+  - **账号登录（浏览器 OAuth）**——不需要桌面端。插件在你浏览器里重放桌面端
+    自己的 OIDC+PKCE 登录流程，拿到 token 后直接连云端聊天。没装桌面端、
+    没有管理员权限的机器也能用。
+  - **本地凭据**——**Amazon Quick 桌面版**已安装并**登录**（Windows 默认装在
+    `%LOCALAPPDATA%\Programs\quickwork\`，即 `C:\Users\<用户名>\AppData\Local\Programs\quickwork\`；
+    macOS 为 `/Applications/Amazon Quick.app`）。Windows 上插件直接从
+    Credential Manager 读取应用保存的会话——**不需要 agent.exe、不需要
+    outpost**；token 过期走 OIDC 自动续期并写回，桌面端不受影响。其他平台
+    （或读取失败时）回退到拉起内置 `quickwork-agent --outpost-only`，复用
+    应用登录态——**不需要**桌面端保持运行，登录态存在系统凭据存储里。
 - **Node ≥ 22**：只在跑测试时需要；插件本身是纯 ESM、无第三方依赖。
 
 ### 2. 安装插件
 
 ```bash
 magpie plugin add <本目录或 git URL>
-magpie login aws-quick        # keyless：直接探测本地 Quick 登录态
+magpie login aws-quick        # 按提示选择登录方式
 ```
 
-登录时插件会启动 outpost 并调用 `/auth/sncs-session` 验证会话可用；
-未登录桌面端会明确报错提示先去登录。
+**两种登录方式**
+
+- **账号登录（浏览器 OAuth）**：打开 `quick.aws.com/sn` 登录页，插件在本地
+  回调端口接住授权码，自行完成动态客户端注册 + code 换 token + user-info，
+  然后把 `{jwt, ws_host, refresh_token, …}` 存到
+  `%APPDATA%\magpie-aws-quick\oauth-sessions.json`（Windows）/
+  `~/.config/magpie-aws-quick/`（Linux）/
+  `~/Library/Application Support/magpie-aws-quick/`（macOS），权限 `0600`。
+  约 1 小时有效的 id_token 过期时用存的 refresh_token 自动续期（轮换后的
+  refresh_token 也会写回文件）。请求时**不再拉起 outpost**，WS 直连租户的
+  `ws_host`。
+- **本地凭据**：Windows 上直接读 Credential Manager 里的会话直连聊天
+  （OIDC 自动续期 + 写回，桌面端 token 保持有效）；其他平台或读取失败时
+  回退到拉起内置 outpost 并调用 `/auth/sncs-session` 校验；未登录会明确
+  报错提示先去登录。
 
 ## 已知限制
 
@@ -101,11 +119,21 @@ magpie login aws-quick        # keyless：直接探测本地 Quick 登录态
 - **消息体积**：`user_message.text` 服务端上限 64KB。超大 system prompt / 工具 schema /
   会话历史会自动压缩（schema 去注解、历史从旧到新裁、tool_result 封顶），截断时
   回复里会带 `> [quick] …已截断` 提示。
+- **OAuth 登录仅限 consumer/social 通道**：重放的是桌面端 `quick.aws.com/sn`
+  的 `social` provider 流程。走企业 IdP 的租户如果 issuer 不是 Amazon 社交 IdP
+  可能无法完成——这种情况请改用本地凭据方式。OAuth 路径以空 `outpostId` 运行
+  （服务端接受），将来若有依赖真实设备 id 的服务端能力不适用于此路径。
 
 ## 安全与凭据
 
 - instance token 是插件每次启动随机生成的，**只**通过 stdin 交给子进程，不落盘、不进日志。
-- `id_token`/`ws_host`/`actor_arn` 等只在内存中流转；会话缓存 key 只存哈希。
+- 本地凭据路径下 `id_token`/`ws_host`/`actor_arn` 等只在内存中流转；会话缓存 key 只存哈希。
+- OAuth 路径会把 `{jwt, refresh_token, client_secret, …}` 存入
+  `oauth-sessions.json`（0600）——这是 refresh token 轮换的必然要求，
+  与 Quick 桌面端自身在系统凭据存储里保存登录态等价；请保护好自己的用户目录。
+- 本地凭据（Credential Manager）路径只**读取**应用已存的会话；续期时把
+  新 token **写回同一个凭据**（含 `session@` 孪生项），保证桌面端读到的
+  始终是有效 token——等价于应用自己刷新，只是提前帮它做了。
 - outpost 的 `/auth/*` 全部要求 `Authorization: Bearer <instance token>`；
   `/health` 是唯一公开端点。
 - 插件不会修改 Amazon Quick 的任何文件；`agent.zip` 解压到系统临时目录
