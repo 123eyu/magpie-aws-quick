@@ -61,13 +61,27 @@ What the plugin does:
 
 Quick keeps conversation history server-side per `thread_id`, but OpenAI
 clients resend the entire transcript on every request. This plugin tracks
-continuations exactly instead of guessing:
+continuations through three tiers, most precise first:
 
 - **Incremental hash chain** — each request computes `h[k] = H(scope,
   m1…mk)` over the canonically rendered message list. A cache hit means
   the client appended to a conversation we already answered, so only the
   new tail (user turns / tool results) goes upstream; Quick's server-side
   history supplies the rest and its prompt cache stays warm.
+- **Fuzzy anchors** — when a client extension prunes or rewrites old
+  turns (compaction, history surgery), the strict chain breaks. The
+  plugin then matches position-independent anchors: the echo of our own
+  last reply plus the three messages that preceded it. Position drift
+  from trimming doesn't matter; a rewritten tail still starts fresh.
+- **Gateway session key** — as a last resort, a stable session id the
+  gateway stamps on every request of a chat (magpie's
+  `x-magpie-session` header; OpenAI clients like pi also send their own
+  session-affinity headers) identifies the conversation even when
+  history was rewritten beyond recognition. The entry rewrites itself
+  every turn, so aggressive compaction can't strand it.
+
+Tier order matters: verified content matches always win; the session key
+is only used when both content tiers fail.
 - **Scope isolation** — the chain is namespaced by
   `H(account, agent_mode, thinking_effort, system prompt, tool names)`:
   switching accounts, models, effort, system prompt, or the toolset
@@ -128,6 +142,12 @@ magpie plugin add <this directory or git URL>
 magpie login aws-quick        # pick a sign-in method when prompted
 ```
 
+**Alternative: standalone OpenAI-compatible proxy** — `node bin/serve.mjs`
+serves the same adapter on `127.0.0.1:$PORT/v1` (default port 3426) for
+clients that don't go through magpie, or to add Quick as a custom magpie
+provider via `magpie provider add --base-url http://127.0.0.1:3426/v1`.
+See the file header for options (`PROXY_TOKEN` auth recommended).
+
 **Sign-in methods**
 
 - **账号登录（Browser OAuth）**: opens `quick.aws.com/sn`, waits on a localhost
@@ -176,8 +196,9 @@ magpie login aws-quick        # pick a sign-in method when prompted
 - **Message size**: the whole `user_message` frame is hard-capped at 64 KB
   server-side (`text` + `system_prompt` share it). Oversized system prompts /
   tool schemas / history are compacted automatically (schema de-annotation,
-  tool-spec lite fallback, oldest-first history trimming, capped tool
-  results); truncation is surfaced as a `> [quick] …truncated` note.
+  tool-spec lite then names-only fallback, oldest-first history trimming,
+  capped tool results); truncation is surfaced as a `> [quick] …truncated`
+  note.
 
 ## Security & credentials
 
@@ -218,5 +239,6 @@ Amazon/AWS.
 
 ## Community
 
-Questions, suggestions, or want to tinker together? Come say hi on
-**[linux.do](https://linux.do)**.
+Questions, bug reports, suggestions, or want to tinker together? Issues and
+pull requests are very welcome — **[linux.do](https://linux.do)** is the
+best place to find me and the community around this plugin.

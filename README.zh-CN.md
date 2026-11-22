@@ -42,18 +42,30 @@ Python 后端（`quickwork-agent`，打包在 `resources/agent.zip` 里），以
    `message_complete` 转成 OpenAI 的 `content`/`reasoning_content`/`usage`。
    一个 user turn 以 `message_complete`（`continuation_expected !== true`）
    结束——与桌面渲染端判定一致。
-5. **会话复用（默认开启）**：基于增量哈希链的精确续接判定——见下文
+5. **会话复用（默认开启）**：三级续接判定——见下文
    [会话复用](#会话复用thread-reuse)。
 
 ### 会话复用（thread reuse）
 
 Quick 在服务端按 `thread_id` 保存会话历史，而 OpenAI 客户端每次请求都重发
-完整 transcript。本插件用精确的续接判定而不是猜测：
+完整 transcript。本插件用三级续接判定，越精确的优先级越高：
 
 - **增量哈希链** —— 每个请求对规范化后的消息列表计算 `h[k] = H(scope,
   m1…mk)`。命中即表示客户端是在"我们已经回答过的会话"上追加了新消息，
   于是只把新增的尾部（user turn / tool result）发给上游；更早的历史由
   Quick 服务端保存，prompt cache 也保持命中。
+- **模糊锚点** —— 客户端扩展压缩/改写旧消息时（compaction、历史手术），
+  严格哈希链会断。此时按位置无关的锚点匹配：我们上一条回复的回显，加上
+  它之前的三条消息的内容哈希。修剪造成的位置漂移不影响判定；尾部被
+  改写过则仍正确地新建 thread。
+- **网关会话键** —— 最后兜底：网关会在同一对话的每个请求上打上稳定的
+  会话 id（magpie 的 `x-magpie-session` 头；pi 等 OpenAI 客户端也会发
+  自己的 session-affinity 头）。即使历史被改写到内容锚点都认不出，
+  也能凭这个键续上原 thread；该条目每轮自我刷新，激进压缩也不会让它
+  失联。
+
+层级顺序很重要：内容匹配命中永远优先，会话键只在前两级都失败时启用。
+
 - **scope 隔离** —— 哈希链按 `H(账号, agent_mode, thinking_effort,
   system prompt, 工具名集合)` 命名空间隔离：换账号、换模型、换推理强度、
   改 system prompt 或工具集，都会透明地新建 thread，而不是续接到一个
@@ -106,6 +118,12 @@ magpie plugin add <本目录或 git URL>
 magpie login aws-quick        # 按提示选择登录方式
 ```
 
+**替代方案：独立 OpenAI 兼容代理**——`node bin/serve.mjs` 把同一个适配层
+以 OpenAI Chat Completions 形式挂在 `127.0.0.1:$PORT/v1`（默认 3426），
+供不走 magpie 的客户端使用，或通过
+`magpie provider add --base-url http://127.0.0.1:3426/v1` 把 Quick 作为
+自定义 provider 接入。参数见文件头（建议设置 `PROXY_TOKEN` 鉴权）。
+
 **两种登录方式**
 
 - **账号登录（浏览器 OAuth）**：打开 `quick.aws.com/sn` 登录页，插件在本地
@@ -139,7 +157,8 @@ magpie login aws-quick        # 按提示选择登录方式
 - **多窗口/并发**：同一 QuickSocket 上不同 thread 可并行 turn；同一 thread 的并发请求会被拒绝（`busy`）。
 - **消息体积**：整个 `user_message` 帧服务端上限 64KB（`text` 与
   `system_prompt` 共享）。超大 system prompt / 工具 schema / 会话历史会自动
-  压缩（schema 去注解、工具规格 lite 降级、历史从旧到新裁、tool_result 封顶），
+  压缩（schema 去注解、工具规格 lite→仅名字降级、历史从旧到新裁、
+  tool_result 封顶），
   截断时回复里会带 `> [quick] …已截断` 提示。
 - **OAuth 登录仅限 consumer/social 通道**：重放的是桌面端 `quick.aws.com/sn`
   的 `social` provider 流程。走企业 IdP 的租户如果 issuer 不是 Amazon 社交 IdP
@@ -178,4 +197,5 @@ MIT。Amazon Quick 是 AWS 的产品，本插件与 Amazon/AWS 无隶属关系�
 
 ## 社区
 
-有问题、建议，或想一起折腾？欢迎来 **[linux.do](https://linux.do)** 社区交流反馈。
+有问题、bug 报告、建议，或想一起折腾？Issue 和 PR 非常欢迎——
+**[linux.do](https://linux.do)** 是找我和这个插件社区的最佳入口。
