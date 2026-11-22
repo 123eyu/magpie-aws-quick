@@ -39,13 +39,14 @@
  * Models are Quick's agent modes, not raw model ids:
  *   fast / balanced / smart / advanced  (X-Magpie-Effort maps to thinking_effort)
  */
+import path from 'node:path'
 import { createOutpostManager } from './lib/outpost.mjs'
 import { handleChatCompletions, handleModels } from './lib/handler.mjs'
 import { createSessionStore, SESSION_DEFAULTS } from './lib/sessions.mjs'
 import { MODELS } from './lib/translate.mjs'
 import {
   createSessionStore as createOAuthStore, createDirectBackend,
-  runOAuthLogin, keyForSession, OAuthError,
+  runOAuthLogin, keyForSession, OAuthError, defaultStoreDir,
 } from './lib/oauth.mjs'
 import { createCredManBackend, loadCredManSession } from './lib/credman.mjs'
 
@@ -145,11 +146,18 @@ function makeSessions(opts) {
   if (opts.sessionReuse === false || opts.sessionReuse === 'false' || opts.sessionReuse === 0) return undefined
   const ttlMs = Number(opts.sessionTtlMs) > 0 ? Number(opts.sessionTtlMs) : SESSION_DEFAULTS.ttlMs
   const max = Number(opts.sessionMax) > 0 ? Math.floor(Number(opts.sessionMax)) : SESSION_DEFAULTS.max
-  return createSessionStore({ ttlMs, max })
+  // Persist to disk: plugin hosts may re-instantiate per request/session, and
+  // an in-memory-only store would drop every cached thread each time. Only
+  // hashes + threadIds are written — never message content.
+  const dir = opts.sessionDir || defaultStoreDir()
+  return createSessionStore({ ttlMs, max, file: path.join(dir, 'thread-sessions.json') })
 }
 
 export const AwsQuickAuthPlugin = async (_input, options) => {
   const opts = options && typeof options === 'object' ? options : {}
+  // Debug diagnostics (MAGPIE_AWS_QUICK_DEBUG=1) append here — plugin-host
+  // stderr is not reliably captured by the magpie app.
+  opts.debugFile = path.join(opts.sessionDir || defaultStoreDir(), 'debug.log')
   const outpostMgr = createOutpostManager(opts)
   const sessions = makeSessions(opts)
   return {

@@ -211,6 +211,58 @@ test('edited history starts a fresh thread', async () => {
   assert.notEqual(msgs.at(-1).threadId, msgs.at(-2).threadId)
 })
 
+test('fuzzy resume: pruned early history still continues via reply+tail anchors', async () => {
+  const sessions = createSessionStore()
+  const m0 = { role: 'user', content: 'ctx block' }
+  const m1 = { role: 'user', content: 'q1' }
+  const m2 = { role: 'user', content: 'q2' }
+  const m3 = { role: 'user', content: 'q3' }
+  // turn 1
+  const r1 = await req({ model: 'fast', messages: [m0, m1] }, { sessions })
+  const rep1 = (await r1.json()).choices[0].message.content
+  const a1 = { role: 'assistant', content: rep1 }
+  // turn 2 — strict continuation
+  const r2 = await req({ model: 'fast', messages: [m0, m1, a1, m2] }, { sessions })
+  const rep2 = (await r2.json()).choices[0].message.content
+  const a2 = { role: 'assistant', content: rep2 }
+  // turn 3 — client rewrote the OLDEST message (pi-style context pruning);
+  // strict hash chain breaks, but reply echo + preceding 3 msgs are intact.
+  const r3 = await req({
+    model: 'fast',
+    messages: [{ role: 'user', content: 'ctx block REWRITTEN' }, m1, a1, m2, a2, m3],
+  }, { sessions })
+  assert.equal(r3.status, 200)
+  await r3.json()
+  const msgs = fake.state.userMessages
+  const t2 = msgs.at(-2)
+  const t3 = msgs.at(-1)
+  assert.equal(t3.threadId, t2.threadId, 'fuzzy anchors must resume the same thread')
+  assert.equal(t3.payload.text, 'q3')
+  assert.ok(!t3.payload.text.includes('REWRITTEN'))
+})
+
+test('fuzzy resume rejects when the tail window itself was rewritten', async () => {
+  const sessions = createSessionStore()
+  const m0 = { role: 'user', content: 'ctx' }
+  const m1 = { role: 'user', content: 'q1' }
+  const m2 = { role: 'user', content: 'q2' }
+  const m3 = { role: 'user', content: 'q3' }
+  const r1 = await req({ model: 'fast', messages: [m0, m1] }, { sessions })
+  const rep1 = (await r1.json()).choices[0].message.content
+  const a1 = { role: 'assistant', content: rep1 }
+  const r2 = await req({ model: 'fast', messages: [m0, m1, a1, m2] }, { sessions })
+  const rep2 = (await r2.json()).choices[0].message.content
+  const a2 = { role: 'assistant', content: rep2 }
+  // rewrite a message INSIDE the tail window (m2 sits right before a2)
+  const r3 = await req({
+    model: 'fast',
+    messages: [m0, m1, a1, { role: 'user', content: 'q2 EDITED' }, a2, m3],
+  }, { sessions })
+  await r3.json()
+  const msgs = fake.state.userMessages
+  assert.notEqual(msgs.at(-1).threadId, msgs.at(-2).threadId, 'tail rewrite must not fuzzy-match')
+})
+
 test('session_connect carries surface/outpost/appVersion; ping gets pong', async () => {
   await req({ model: 'fast', messages: [{ role: 'user', content: 'ping test' }] })
   // wait a beat for the ping interval? No — ping is on a 25s timer; just assert connect frame.
@@ -398,5 +450,27 @@ test('mid-stream error emits an error chunk then DONE', async () => {
     assert.equal(events.at(-1).done, true)
   } finally {
     await errFake.close()
+  }
+})
+
+test('connect-time error frame fails fast instead of hanging', async () => {
+  const f = await startFakeQuick({ connectError: 'LimitExceededException' })
+  try {
+    const mgr = {
+      ensure: async () => ({
+        outpostId: async () => 'o6',
+        session: async () => ({ ws_host: f.wsHost, id_token: 't', usable_until: Math.floor(Date.now() / 1000) + 600 }),
+      }),
+    }
+    const res = await handleChatCompletions({
+      body: { model: 'fast', stream: false, messages: [{ role: 'user', content: 'hi' }] },
+      outpostMgr: mgr,
+      options: { identity: 'connerr-acct' },
+    })
+    assert.equal(res.status, 502)
+    const j = await res.json()
+    assert.match(j.error.message, /LimitExceededException|Too many active connections/)
+  } finally {
+    await f.close()
   }
 })

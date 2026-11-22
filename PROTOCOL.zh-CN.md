@@ -120,6 +120,7 @@ inner JSON 形如 `{"type": "…", "payload": {…}}`。常用类型：
     "thread_id": "<client-chosen id, e.g. uuid>",
     "text": "<整条用户输入>",
     "system_prompt": "<可选的逐轮 system 覆盖>",        // 已实测生效
+    "custom_prompt": "<可选的逐轮指令>",                // 已实测生效
     "message_id": "<uuid>",
     "agent_mode": "fast|balanced|smart|advanced",
     "user_timezone": "UTC",

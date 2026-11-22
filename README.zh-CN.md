@@ -62,8 +62,9 @@ Quick 在服务端按 `thread_id` 保存会话历史，而 OpenAI 客户端每�
   分叉的历史永远不会误续接；只有纯追加的尾部才合格。缓存条目使用即
   销毁（single-use），客户端重试也不会重放一个 turn。
 - **有界内存** —— 条目空闲 24 小时过期（agent 会话的轮次间隔远超半小时），
-  LRU 上限 200 个 thread；不落盘。命中过期 thread 是安全的：handler 会用
-  完整 transcript 自动重试一次新 thread。
+  LRU 上限 200 个 thread。缓存持久化到 `thread-sessions.json`（只存哈希 +
+  thread id，无内容），插件重载后仍可续接；命中过期 thread 是安全的：
+  handler 会用完整 transcript 自动重试一次新 thread。
 
 ### 模型：agent_mode，不是模型 id
 
@@ -148,7 +149,9 @@ magpie login aws-quick        # 按提示选择登录方式
 ## 安全与凭据
 
 - instance token 是插件每次启动随机生成的，**只**通过 stdin 交给子进程，不落盘、不进日志。
-- 本地凭据路径下 `id_token`/`ws_host`/`actor_arn` 等只在内存中流转；会话缓存 key 只存哈希。
+- 本地凭据路径下 `id_token`/`ws_host`/`actor_arn` 等只在内存中流转；会话缓存
+  只存哈希 + thread id（无消息内容），持久化到 `thread-sessions.json`，
+  插件重载后仍可续接 thread。
 - OAuth 路径会把 `{jwt, refresh_token, client_secret, …}` 存入
   `oauth-sessions.json`（0600）——这是 refresh token 轮换的必然要求，
   与 Quick 桌面端自身在系统凭据存储里保存登录态等价；请保护好自己的用户目录。

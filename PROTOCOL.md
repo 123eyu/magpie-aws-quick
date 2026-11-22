@@ -123,6 +123,7 @@ Inner JSON looks like `{"type": "…", "payload": {…}}`. Common types:
     "thread_id": "<client-chosen id, e.g. uuid>",
     "text": "<the whole user input>",
     "system_prompt": "<optional per-turn system override>",  // verified live
+    "custom_prompt": "<optional per-turn instruction>",       // verified live
     "message_id": "<uuid>",
     "agent_mode": "fast|balanced|smart|advanced",
     "user_timezone": "UTC",

@@ -79,8 +79,10 @@ continuations exactly instead of guessing:
   replay a turn.
 - **Bounded memory** — entries expire after 24h idle (agent sessions pause
   far longer than that between turns) and the store is LRU-capped at 200
-  threads; nothing touches disk. A stale hit is safe: the handler retries
-  once on a fresh thread with the full transcript.
+  threads. The cache persists to `thread-sessions.json` (hashes + thread
+  ids only, no content) so reuse survives plugin reloads; a stale hit is
+  safe — the handler retries once on a fresh thread with the full
+  transcript.
 
 ### Models: agent_mode, not model ids
 
@@ -182,7 +184,9 @@ magpie login aws-quick        # pick a sign-in method when prompted
 - The instance token is randomly generated per launch and passed to the child
   **only** via stdin — never written to disk or logs.
 - On the local-credentials path, `id_token`/`ws_host`/`actor_arn` etc. live
-  only in memory; session-cache keys store hashes only.
+  only in memory; session-cache entries store only hashes + thread ids —
+  persisted to `thread-sessions.json` (no message content) so thread reuse
+  survives plugin reloads.
 - On the OAuth path, `{jwt, refresh_token, client_secret, …}` is persisted in
   `oauth-sessions.json` (mode `0600`) — unavoidable for refresh-token
   rotation, equivalent to the desktop app keeping its sign-in in the OS

@@ -98,3 +98,27 @@ test('store TTL and LRU eviction', () => {
   assert.equal(store.has('c'), false)
   assert.equal(store.size, 0)
 })
+
+test('store persists to disk and a fresh instance resumes entries', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const path = await import('node:path')
+  const dir = mkdtempSync(path.join(tmpdir(), 'magpie-sess-'))
+  const file = path.join(dir, 'thread-sessions.json')
+  try {
+    const s1 = createSessionStore({ file, ttlMs: 60_000 })
+    s1.set('k1', { threadId: 'thread-abc' })
+    s1.set('k2', { threadId: 'thread-def' })
+    // persist is debounced — wait for the write
+    await new Promise((r) => setTimeout(r, 400))
+    const s2 = createSessionStore({ file, ttlMs: 60_000 })
+    assert.equal(s2.take('k1')?.threadId, 'thread-abc')
+    assert.equal(s2.take('k2')?.threadId, 'thread-def')
+    assert.equal(s2.size, 0) // take() claims are persisted too
+    await new Promise((r) => setTimeout(r, 400))
+    const s3 = createSessionStore({ file, ttlMs: 60_000 })
+    assert.equal(s3.size, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
