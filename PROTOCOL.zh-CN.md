@@ -212,6 +212,24 @@ Quick 自有 agent 工具的服务端执行过程，`message_complete.tool_calls
 直接用自带工具作答（表现为普通文本）；Quick 自带工具的执行结果不映射为
 OpenAI `tool_calls`。
 
+### 4.7 图片附件（已实测）
+
+`user_message.payload.attachments` 使用渲染层的格式
+`{type:'image', name, size, mimeType, data}`，`data` 可以是纯 base64 或
+`data:` URL；没有设备的会话里模型也能看到图片。附件算在 64KB 帧里：40KB 的
+PNG 可以，200KB 的会触发 stream error。桌面端发大文件时先
+`POST {tenant_url}/integration/quick-work/upload-attachment` 拿 `{attachmentId}`，
+再轮询 `attachment-dlp-status`，然后把文件投递到本地 agent 的工作区
+（`/files/upload/{session}`）并在消息里发 `path`；只带 `attachmentId` 模型看不到。
+
+### 4.8 账号用量（已实测）
+
+`POST {tenant_url}/integration/quick-work/qbs-event`，请求体
+`{"eventType":"getAvailableEntitlementUnits","eventBody":{"getAvailableEntitlementUnits":{"awsAccountId":"…"}}}`
+（Bearer id_token；请求体不能为空），返回
+`entitlements[{unitType, numMinsAvailable, numMinsProvisioned, overageAllowed, rateLimitStatus, …}]`
+和 `subscriptionMetadata{subscriptionType, freeTrialMetadata{status, expiryDate}}`。
+
 ## 5. agent_mode → 实际模型
 
 | agent_mode | 观测 resolved_model_id |

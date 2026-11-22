@@ -49,6 +49,7 @@ import {
   runOAuthLogin, keyForSession, OAuthError, defaultStoreDir,
 } from './lib/oauth.mjs'
 import { createCredManBackend, loadCredManSession } from './lib/credman.mjs'
+import { quickUsage } from './lib/usage.mjs'
 
 const PROVIDER = 'aws-quick'
 // Requests never reach this address: the loader's fetch intercepts them.
@@ -63,9 +64,9 @@ const BASE_MODEL = {
   capabilities: {
     temperature: false,
     reasoning: true,
-    attachment: false,
+    attachment: true,
     toolcall: true,
-    input: { text: true, image: false, audio: false, video: false, pdf: false },
+    input: { text: true, image: true, audio: false, video: false, pdf: false },
     output: { text: true },
     interleaved: false,
   },
@@ -163,6 +164,29 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
   const opts = options && typeof options === 'object' ? options : {}
   const outpostMgr = createOutpostManager(opts)
   const sessions = makeSessions(opts)
+  // The account's backend by sign-in method: OAuth and Credential Manager chat
+  // over the stored token directly (no outpost; OAuth rotates its refresh
+  // token in the session file, Credential Manager writes refreshed tokens
+  // back to the app's own credential); otherwise the spawned local outpost.
+  function backendFor(auth) {
+    const key = auth?.type === 'api' ? auth.key : undefined
+    if (!key) return null
+    if (auth?.metadata?.mode === 'oauth') {
+      const store = createOAuthStore({ dir: opts.sessionDir })
+      const backend = createDirectBackend({
+        load: () => store.get(key),
+        persist: (s) => store.set(key, s),
+        fetchImpl: opts.fetchImpl,
+        log: opts.log,
+      })
+      return { key, apiKey: 'aws-quick-oauth', mgr: { ensure: () => backend.ensure() } }
+    }
+    if (auth?.metadata?.mode === 'local-credman') {
+      const backend = createCredManBackend({ fetchImpl: opts.fetchImpl, log: opts.log })
+      return { key, apiKey: 'aws-quick-local', mgr: { ensure: () => backend.ensure() } }
+    }
+    return { key, apiKey: 'aws-quick-local', mgr: outpostMgr }
+  }
   return {
     config: async (cfg) => {
       cfg.provider ??= {}
@@ -255,29 +279,16 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
       ],
       async loader(getAuth) {
         const auth = await getAuth()
-        const key = auth?.type === 'api' ? auth.key : undefined
-        if (!key) return {}
-        // OAuth-provisioned account: chat over the stored token directly, no
-        // outpost spawn. Session file handles refresh-token rotation.
-        if (auth?.metadata?.mode === 'oauth') {
-          const store = createOAuthStore({ dir: opts.sessionDir })
-          const backend = createDirectBackend({
-            load: () => store.get(key),
-            persist: (s) => store.set(key, s),
-            fetchImpl: opts.fetchImpl,
-            log: opts.log,
-          })
-          const mgr = { ensure: () => backend.ensure() }
-          return { baseURL: BASE, apiKey: 'aws-quick-oauth', fetch: makeFetch(mgr, { ...opts, identityKey: key }, sessions) }
-        }
-        // Credential-Manager session (Windows): same direct-WS path, tokens
-        // refreshed via OIDC and written back to the app's own credential.
-        if (auth?.metadata?.mode === 'local-credman') {
-          const backend = createCredManBackend({ fetchImpl: opts.fetchImpl, log: opts.log })
-          const mgr = { ensure: () => backend.ensure() }
-          return { baseURL: BASE, apiKey: 'aws-quick-local', fetch: makeFetch(mgr, { ...opts, identityKey: key }, sessions) }
-        }
-        return { baseURL: BASE, apiKey: 'aws-quick-local', fetch: makeFetch(outpostMgr, { ...opts, identityKey: key }, sessions) }
+        const b = backendFor(auth)
+        if (!b) return {}
+        return { baseURL: BASE, apiKey: b.apiKey, fetch: makeFetch(b.mgr, { ...opts, identityKey: b.key }, sessions) }
+      },
+      // magpie's own hook (OpenCode ignores it): agent-hour quota for the
+      // account card and Usage page.
+      usage: async (getAuth, _provider, ctx) => {
+        const b = backendFor(await getAuth())
+        if (!b) return { error: '未登录 Amazon Quick 账号' }
+        return quickUsage(async () => (await b.mgr.ensure()).session(), { fetchImpl: opts.fetchImpl, signal: ctx?.signal })
       },
     },
 

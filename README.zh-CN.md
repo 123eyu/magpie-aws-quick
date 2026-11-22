@@ -140,6 +140,14 @@ magpie login aws-quick        # 按提示选择登录方式
   回退到拉起内置 outpost 并调用 `/auth/sncs-session` 校验；未登录会明确
   报错提示先去登录。
 
+### 账号卡片上的用量
+
+插件实现了 magpie 的 `auth.usage` 钩子，账号卡片和 **Usage** 页会显示 Quick
+额度：agent 小时数已用多少、套餐总量、套餐名（如 *Quick Lite (free trial)*）
+和试用到期时间。数据来自租户数据面的 `getAvailableEntitlementUnits`，用的是
+账号自己的 token，和桌面端用量组件的数字一致；重置时间按桌面端的算法取
+下个月 1 号。
+
 ## 已知限制
 
 - **工具调用是文本约定模拟**：Quick 的 agent 在服务端自带工具链（浏览器、本地文件、MCP 等），
@@ -150,8 +158,12 @@ magpie login aws-quick        # 按提示选择登录方式
   `tool_choice:'required'` 下 smart/advanced 均能稳定产出；模型偶尔会先用
   自带工具（如联网搜索）直接作答，此时表现为普通文本回复。
   Quick 自带工具的执行结果不会映射为 OpenAI `tool_calls`（那是它内部过程）。
-- **图片/附件**：`user_message` 支持 `attachments`，但插件 v1 只渲染文本，
-  图片块渲染为 `[image omitted]` 占位。
+- **图片只支持小图**：内联图片（`data:` URL、Anthropic base64 块、工具结果
+  里的图片）会作为 `user_message.attachments` 发出去，但 Quick 把图片的
+  base64 和文字算在同一个 64KB 帧里，大约 40KB 以内的图才能发；更大的图会
+  被丢弃，并在消息里注明。Quick 自己的上传接口只会把文件投递到已连接的
+  设备，直连会话没有设备，所以用不了。非图片文件（`file`/`input_file`）
+  仍是占位。
 - **采样参数**：`temperature` 等不在协议内，传了也会被服务端忽略（`capabilities.temperature:false`）。
 - **会话与账号绑定**：thread 复用的 scope 里包含账号身份哈希；换号后旧 thread 自动失效重建。
 - **多窗口/并发**：同一 QuickSocket 上不同 thread 可并行 turn；同一 thread 的并发请求会被拒绝（`busy`）。

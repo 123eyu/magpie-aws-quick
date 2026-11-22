@@ -226,6 +226,26 @@ verified stable); the model may also ignore it and answer with its own tools
 (shows up as plain text); Quick's built-in tool results are never mapped to
 OpenAI `tool_calls`.
 
+### 4.7 Image attachments (verified)
+
+`user_message.payload.attachments` takes the renderer's shape
+`{type:'image', name, size, mimeType, data}` with `data` as raw base64 or a
+`data:` URL; the model sees the image even on a device-less session. The
+attachment counts against the 64 KB frame: a 40 KB PNG works, a 200 KB one
+fails with a stream error. The desktop app uploads larger files via
+`POST {tenant_url}/integration/quick-work/upload-attachment` (→
+`{attachmentId}`, then DLP polling at `attachment-dlp-status`), but then
+delivers them to the local agent's workspace (`/files/upload/{session}`) and
+sends a `path`; an `attachmentId` alone is not visible to the model.
+
+### 4.8 Account usage (verified)
+
+`POST {tenant_url}/integration/quick-work/qbs-event` with
+`{"eventType":"getAvailableEntitlementUnits","eventBody":{"getAvailableEntitlementUnits":{"awsAccountId":"…"}}}`
+(Bearer id_token; the body must be non-empty) returns
+`entitlements[{unitType, numMinsAvailable, numMinsProvisioned, overageAllowed, rateLimitStatus, …}]`
+and `subscriptionMetadata{subscriptionType, freeTrialMetadata{status, expiryDate}}`.
+
 ## 5. agent_mode → actual model
 
 | agent_mode | observed resolved_model_id |

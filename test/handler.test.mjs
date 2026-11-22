@@ -123,6 +123,33 @@ test('no system_prompt field when the request has no system messages', async () 
   assert.equal(p.system_prompt, undefined)
 })
 
+test('inline images go to user_message.attachments and shrink the text budget', async () => {
+  const img = 'Q'.repeat(30 * 1024)
+  await req({
+    model: 'fast',
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'what is this? ' + 'x'.repeat(40 * 1024) }, { type: 'image_url', image_url: { url: `data:image/png;base64,${img}` } }] },
+    ],
+  })
+  const p = fake.state.userMessages.at(-1).payload
+  assert.equal(p.attachments.length, 1)
+  assert.equal(p.attachments[0].mimeType, 'image/png')
+  assert.equal(p.attachments[0].data, img)
+  assert.ok(byteLen(p.text) + img.length <= 60 * 1024) // text + image share the frame
+  assert.ok(p.text.includes('what is this?'))
+})
+
+test('images too big for the frame are skipped with a note, not sent', async () => {
+  const img = 'Z'.repeat(80 * 1024)
+  await req({
+    model: 'fast',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: `data:image/png;base64,${img}` } }] }],
+  })
+  const p = fake.state.userMessages.at(-1).payload
+  assert.equal(p.attachments, undefined)
+  assert.ok(p.text.includes('1 image(s) not delivered'))
+})
+
 test('system prompt shares the 64KB frame budget with text', async () => {
   const bigSys = 'S'.repeat(40 * 1024) // over SYSTEM_PROMPT_CAP → capped at 32KB
   const bigUser = 'U'.repeat(30 * 1024)

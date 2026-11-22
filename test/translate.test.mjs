@@ -1,12 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { textOf, modeFor, effortFor, renderTranscript, renderDelta, byteLen, capText, UPSTREAM_TEXT_LIMIT } from '../lib/translate.mjs'
+import { textOf, modeFor, effortFor, renderTranscript, renderDelta, byteLen, capText, UPSTREAM_TEXT_LIMIT, imagesOf, pickImages } from '../lib/translate.mjs'
 
 test('textOf handles strings, parts arrays, and junk', () => {
   assert.equal(textOf('hi'), 'hi')
   assert.equal(textOf([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }]), 'a\nb')
   assert.equal(textOf(null), '')
-  assert.equal(textOf([{ type: 'image_url', image_url: { url: 'x' } }]), '[image omitted]')
+  assert.equal(textOf([{ type: 'image_url', image_url: { url: 'x' } }]), '[image]')
   assert.equal(textOf(42), '42')
 })
 
@@ -191,4 +191,33 @@ test('renderTranscript squeezes stale tool results, keeps fresh ones and all dia
   assert.ok(out.includes('STALE') && out.includes('middle omitted')) // stale result squeezed, not dropped
   assert.ok(out.includes('f'.repeat(8 * 1024))) // fresh result fits whole
   assert.ok(byteLen(out) < 16 * 1024)
+})
+
+test('imagesOf reads OpenAI, Responses, Anthropic and nested tool_result image shapes', () => {
+  const imgs = imagesOf([
+    { type: 'image_url', image_url: { url: 'data:image/png;base64,QUJD' } },
+    { type: 'input_image', image_url: 'data:image/jpeg;base64,REVG' },
+    { type: 'image', source: { type: 'base64', media_type: 'image/webp', data: 'R0hJ' } },
+    { type: 'tool_result', content: [{ type: 'image_url', image_url: { url: 'data:image/gif;base64,SktM' } }] },
+    { type: 'image_url', image_url: { url: 'https://example.com/a.png' } },
+    { type: 'text', text: 'not an image' },
+  ])
+  assert.deepEqual(imgs.slice(0, 4).map((i) => i.mimeType), ['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+  assert.equal(imgs[0].data, 'QUJD')
+  assert.deepEqual(imgs[4], { url: 'https://example.com/a.png' })
+  assert.equal(imgs.length, 5)
+})
+
+test('pickImages keeps images that fit the byte budget and counts the rest as skipped', () => {
+  const small = 'A'.repeat(1000)
+  const big = 'B'.repeat(50 * 1024)
+  const msgs = [
+    { role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${big}` } }, { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${small}` } }] },
+    { role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://example.com/x.png' } }] },
+  ]
+  const r = pickImages(msgs, 10 * 1024)
+  assert.equal(r.attachments.length, 1)
+  assert.deepEqual(r.attachments[0], { type: 'image', name: 'image-1.jpg', size: 750, mimeType: 'image/jpeg', data: small })
+  assert.equal(r.skipped, 2)
+  assert.ok(r.bytes >= small.length && r.bytes <= 10 * 1024)
 })

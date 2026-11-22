@@ -165,6 +165,15 @@ See the file header for options (`PROXY_TOKEN` auth recommended).
   outpost and calls `/auth/sncs-session` — a clear error tells you to sign in
   to the app first if it isn't.
 
+### Usage on the account card
+
+The plugin implements magpie's `auth.usage` hook, so the account card and the
+**Usage** page show the account's Quick quota: agent hours used of the plan's
+allowance, the plan name (e.g. *Quick Lite (free trial)*) and the trial's
+expiry. It reads `getAvailableEntitlementUnits` from the tenant data plane
+with the account's own token — the same numbers as the desktop app's usage
+widget, which also assumes the allowance resets on the 1st of next month.
+
 ## Known limitations
 
 - **Tool calls are a text-convention simulation**: Quick's agent owns a
@@ -179,8 +188,13 @@ See the file header for options (`PROXY_TOKEN` auth recommended).
   directly with its own tools (e.g. web search) instead, which shows up as a
   plain-text reply. Quick's built-in tool results are never mapped to OpenAI
   `tool_calls` (that's its internal process).
-- **Images/attachments**: `user_message` supports `attachments`, but v1 only
-  renders text; image parts become `[image omitted]` placeholders.
+- **Images: small ones only.** Inline images (`data:` URLs, Anthropic base64
+  blocks, images inside tool results) are sent as `user_message.attachments`,
+  but Quick counts their base64 against the same 64 KB frame as the text, so
+  only roughly ≤ 40 KB images get through; larger ones are dropped with a
+  note telling the model so. Quick's own upload API only delivers files to a
+  connected device, which direct sessions don't have. Non-image files
+  (`file`/`input_file` parts) are still placeholders.
 - **Sampling params**: `temperature` etc. don't exist in the protocol and are
   ignored server-side (`capabilities.temperature:false`).
 - **Sessions are account-bound**: the thread-reuse scope includes an account
