@@ -208,8 +208,9 @@ widget, which also assumes the allowance resets on the 1st of next month.
   workspace — the same place the Quick app puts them. Remote URLs and
   non-image files (`file`/`input_file` parts) are still unsupported; a
   failed upload falls back to a note telling the model the image is
-  missing. Cloud upload needs a direct session (OAuth / Credential Manager
-  sign-in); the local-outpost fallback stays inline-only.
+  missing. Cloud upload works on direct sessions (OAuth / Credential Manager
+  sign-in) and on the local-outpost fallback: outpost sessions carry the same
+  `id_token` / `ws_host`, which is all the upload flow needs (verified live).
 - **Sampling params**: `temperature` etc. don't exist in the protocol and are
   ignored server-side (`capabilities.temperature:false`).
 - **Sessions are account-bound**: the thread-reuse scope includes an account
