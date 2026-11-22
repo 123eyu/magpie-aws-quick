@@ -127,7 +127,7 @@ inner JSON 形如 `{"type": "…", "payload": {…}}`。常用类型：
     "user_locale": "en-US",
     "thinking_effort": "off|low|medium|high|max",   // 可选
     "chat_agent_id": "…",                            // 可选
-    "project_context": {…}, "attachments": […],     // 可选，插件未用
+    "project_context": {…}, "attachments": […],     // 可选；内联图片，见 §4.7
     "web_search_enabled": true, …                   // 可选
   } }
 ```

@@ -130,7 +130,7 @@ Inner JSON looks like `{"type": "…", "payload": {…}}`. Common types:
     "user_locale": "en-US",
     "thinking_effort": "off|low|medium|high|max",   // optional
     "chat_agent_id": "…",                            // optional
-    "project_context": {…}, "attachments": […],     // optional, unused by plugin
+    "project_context": {…}, "attachments": […],     // optional; inline images, see §4.7
     "web_search_enabled": true, …                   // optional
   } }
 ```
