@@ -56,6 +56,27 @@ export function esEncode(innerEventJson, { threadId, messageId } = {}) {
   return msg
 }
 
+/** AWS event-stream error frame (:message-type=error), as sent e.g. for LimitExceededException. */
+export function esEncodeError(code, message) {
+  const body = te.encode(JSON.stringify({ Message: message || code }))
+  const headers = [
+    esHeader(':message-type', 'error'),
+    esHeader(':error-code', code),
+    esHeader(':error-message', message || code),
+    esHeader(':content-type', 'application/x-amz-json-1.0'),
+  ]
+  const headersLen = headers.reduce((n, h) => n + h.length, 0)
+  const total = 12 + headersLen + body.length + 4
+  const msg = new Uint8Array(total)
+  const dv = new DataView(msg.buffer)
+  dv.setUint32(0, total, false)
+  dv.setUint32(4, headersLen, false)
+  let off = 12
+  for (const h of headers) { msg.set(h, off); off += h.length }
+  msg.set(body, off)
+  return msg
+}
+
 // ---------- WS frame codec ----------
 function wsEncode(payload, opcode = 2) {
   const data = typeof payload === 'string' ? te.encode(payload) : payload
@@ -88,7 +109,7 @@ function wsEncode(payload, opcode = 2) {
  *        maps a user_message payload → inner events to emit (may be async)
  * @param {object} [opts.session] overrides for the sncs-session fields the WS layer sees
  */
-export async function startFakeQuick({ script, session } = {}) {
+export async function startFakeQuick({ script, session, connectError } = {}) {
   const state = {
     connections: 0,
     userMessages: [],   // decoded user_message payloads, in order
@@ -158,6 +179,10 @@ export async function startFakeQuick({ script, session } = {}) {
         const t = inner.type
         if (t === 'session_connect') {
           state.sessionConnects.push(inner.payload || {})
+          if (connectError) {
+            try { socket.write(wsEncode(esEncodeError(connectError))) } catch {}
+            return
+          }
           sendEs({ type: 'session_established', payload: {} })
           sendEs({ type: 'connected', payload: {} })
           return
