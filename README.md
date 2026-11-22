@@ -77,8 +77,10 @@ continuations exactly instead of guessing:
   thread that doesn't match; only append-only tails qualify. Cached
   entries are claimed on use (single-use), so a client retry cannot
   replay a turn.
-- **Bounded memory** — entries expire after 30 minutes and the store is
-  LRU-capped at 200 threads; nothing touches disk.
+- **Bounded memory** — entries expire after 24h idle (agent sessions pause
+  far longer than that between turns) and the store is LRU-capped at 200
+  threads; nothing touches disk. A stale hit is safe: the handler retries
+  once on a fresh thread with the full transcript.
 
 ### Models: agent_mode, not model ids
 

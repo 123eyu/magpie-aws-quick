@@ -28,7 +28,7 @@
  *   appVersion   WS appVersion (default 1.2.4660)
  *   channel      WS channel hint (beta|prod)
  *   sessionReuse continue Quick threads across turns (default true)
- *   sessionTtlMs forget a cached thread state after this long unused (default 1800000)
+ *   sessionTtlMs forget a cached thread state after this long unused (default 86400000 = 24h)
  *   sessionMax   at most this many cached thread states (default 200)
  *   sessionDir   where OAuth sessions are stored (default: platform config dir)
  *   oauthPort    fixed localhost callback port for OAuth login (default: free port)
