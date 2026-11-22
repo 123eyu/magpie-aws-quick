@@ -57,7 +57,7 @@ const PROVIDER = 'aws-quick'
 const BASE = 'https://quick.aws.com/magpie-aws-quick/v1'
 
 const BASE_MODEL = {
-  limit: { context: 200000, output: 64000 },
+  limit: { context: 1000000, output: 64000 },
   // Quick's own agent tools run server-side; OpenAI-style function calling is
   // layered on top as a <tool_call> text convention (lib/tools.mjs).
   tool_call: true,
