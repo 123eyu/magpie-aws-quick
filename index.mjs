@@ -131,11 +131,17 @@ function makeFetch(outpostMgr, opts, sessions) {
       return new Response(JSON.stringify({ error: { message: e?.message ?? String(e), type: 'api_error', code: 503 } }), { status: 503, headers: { 'content-type': 'application/json' } })
     }
     const identity = await identityFor(outpost, opts.identityKey || 'aws-quick')
+    // magpie stamps every request of a chat session with x-magpie-session;
+    // other agents (pi) send their own affinity headers. Captured for the
+    // session-keyed thread-reuse fallback.
+    const sessionKey = ['x-magpie-session', 'session_id', 'x-session-id', 'x-session-affinity', 'x-client-request-id', 'x-thread-id', 'x-conversation-id']
+      .map((n) => headerOf(input, init, n))
+      .find((v) => typeof v === 'string' && v.trim())
     return handleChatCompletions({
       body,
       outpostMgr,
       sessions,
-      options: { ...opts, identity },
+      options: { ...opts, identity, sessionKey },
       effortHeader: headerOf(input, init, 'x-magpie-effort'),
       signal: init?.signal,
     })

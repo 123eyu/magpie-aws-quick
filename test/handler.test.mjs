@@ -263,6 +263,51 @@ test('fuzzy resume rejects when the tail window itself was rewritten', async () 
   assert.notEqual(msgs.at(-1).threadId, msgs.at(-2).threadId, 'tail rewrite must not fuzzy-match')
 })
 
+test('session-key fallback resumes when history is rewritten beyond anchors', async () => {
+  const sessions = createSessionStore()
+  const u1 = { role: 'user', content: 'q1' }
+  const call = (messages, sessionKey) => handleChatCompletions({
+    body: { model: 'fast', messages },
+    outpostMgr,
+    sessions,
+    options: { identity: 'sess-acct', sessionKey, log: () => {} },
+  })
+  // turn 1 — seeds hash entry AND session-key entry
+  const rep1 = (await (await call([u1], 'magpie-sess-1')).json()).choices[0].message.content
+  // turn 2 — early history rewritten AND too short for fuzzy anchors (a<3);
+  // only the session key can identify the conversation.
+  const r2 = await call([
+    { role: 'user', content: 'q1 REWRITTEN' },
+    { role: 'assistant', content: rep1 },
+    { role: 'user', content: 'q2' },
+  ], 'magpie-sess-1')
+  assert.equal(r2.status, 200)
+  await r2.json()
+  const msgs = fake.state.userMessages
+  assert.equal(msgs.at(-1).threadId, msgs.at(-2).threadId, 'session key must resume the thread')
+  assert.equal(msgs.at(-1).payload.text, 'q2')
+})
+
+test('session-key does not leak across different session ids', async () => {
+  const sessions = createSessionStore()
+  const u1 = { role: 'user', content: 'q1' }
+  const call = (messages, sessionKey) => handleChatCompletions({
+    body: { model: 'fast', messages },
+    outpostMgr,
+    sessions,
+    options: { identity: 'sess-acct', sessionKey, log: () => {} },
+  })
+  const rep1 = (await (await call([u1], 'sess-A')).json()).choices[0].message.content
+  const r2 = await call([
+    { role: 'user', content: 'q1 REWRITTEN' },
+    { role: 'assistant', content: rep1 },
+    { role: 'user', content: 'q2' },
+  ], 'sess-B')
+  await r2.json()
+  const msgs = fake.state.userMessages
+  assert.notEqual(msgs.at(-1).threadId, msgs.at(-2).threadId, 'different session id must not resume')
+})
+
 test('session_connect carries surface/outpost/appVersion; ping gets pong', async () => {
   await req({ model: 'fast', messages: [{ role: 'user', content: 'ping test' }] })
   // wait a beat for the ping interval? No — ping is on a 25s timer; just assert connect frame.
