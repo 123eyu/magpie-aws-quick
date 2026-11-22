@@ -239,6 +239,12 @@ OpenAI `tool_calls`.
 measured `input_tokens≈67k`, `cache_read_tokens≈67k` (prompt-cache hit),
 `context_window=1000000`.
 
+`system_prompt` does **not** replace that built-in prompt: it swaps out only a
+~6.8k-token persona/surface section (total prompt ≈69k → ≈62k with a tiny
+`system_prompt`); the ~62k core (built-in tool definitions etc.) always stays.
+Other `surfaceType`s (`INBOUND_MCP`, `WEB`, `TEAMS`) that would load a smaller
+toolset are rejected at the WS handshake for desktop tokens.
+
 ## 6. Known pitfalls
 
 - After `session_connect`, wait for `session_established`/`connected` before

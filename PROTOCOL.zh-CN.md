@@ -224,6 +224,11 @@ OpenAI `tool_calls`。
 注意 Quick 的系统提示很大：实测 `input_tokens≈67k`、`cache_read_tokens≈67k`
 （命中 prompt cache），`context_window=1000000`。
 
+`system_prompt` **不会**替换这份内置提示词：它只换掉其中约 6.8k token 的
+人设/surface 片段（带一个极短的 `system_prompt` 时总 prompt 约 69k → 62k）；
+约 62k 的核心部分（内置工具定义等）始终存在。会加载更小工具集的其它
+`surfaceType`（`INBOUND_MCP`、`WEB`、`TEAMS`）用桌面端 token 握手时会被拒绝。
+
 ## 6. 已知坑
 
 - `session_connect` 后要等 `session_established`/`connected` 再发 `user_message`，
