@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { startFakeQuick, defaultScript } from './helpers/fake-quick.mjs'
-import { handleChatCompletions, handleModels } from '../lib/handler.mjs'
+import { PLAIN_TEXT_NOTE, handleChatCompletions, handleModels } from '../lib/handler.mjs'
 import { createSessionStore } from '../lib/sessions.mjs'
 import { byteLen } from '../lib/translate.mjs'
 import { OutpostError } from '../lib/outpost.mjs'
@@ -729,6 +729,35 @@ test('usage across agentic steps reports the latest prompt, not the sum', async 
     assert.equal(usage.prompt_tokens_details.cached_tokens, 71000)
     assert.equal(usage.completion_tokens, 100, 'completions accumulate')
     assert.equal(usage.total_tokens, 72300)
+  } finally {
+    await f.close()
+  }
+})
+
+test('custom_prompt tells Quick not to emit Quick-app UI markup, but not for code', async () => {
+  const f = await startFakeQuick({
+    script: () => [
+      { type: 'text_delta', payload: { delta: 'ok' } },
+      { type: 'message_complete', payload: { text: 'ok' } },
+    ],
+  })
+  try {
+    const mgr = {
+      ensure: async () => ({
+        outpostId: async () => 'o-plain',
+        session: async () => ({ ws_host: f.wsHost, id_token: 't', usable_until: Math.floor(Date.now() / 1000) + 600 }),
+      }),
+    }
+    const res = await handleChatCompletions({
+      body: { model: 'smart', messages: [{ role: 'user', content: 'x' }] },
+      outpostMgr: mgr,
+      options: { identity: 'plain-acct' },
+    })
+    assert.equal(res.status, 200)
+    const cp = f.state.userMessages.at(-1).payload.custom_prompt
+    assert.ok(cp.includes(PLAIN_TEXT_NOTE))
+    assert.match(cp, /decision cards/)
+    assert.match(cp, /doesn't apply to code or file contents/)
   } finally {
     await f.close()
   }
