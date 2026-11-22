@@ -137,7 +137,7 @@ test('renderDelta caps oversized tool results per block', () => {
   assert.ok(byteLen(out) < 20 * 1024) // 16KB cap + small user msg
 })
 
-test('renderDelta enforces total byte budget across blocks', () => {
+test('renderDelta shares the budget across parallel tool results instead of dropping the oldest', () => {
   const delta = [
     { role: 'tool', tool_call_id: 'c1', name: 'a', content: 'A'.repeat(10 * 1024) },
     { role: 'tool', tool_call_id: 'c2', name: 'b', content: 'B'.repeat(10 * 1024) },
@@ -147,8 +147,48 @@ test('renderDelta enforces total byte budget across blocks', () => {
   const stats = {}
   const out = renderDelta(delta, { maxBytes: 20 * 1024, stats })
   assert.ok(stats.truncated)
-  assert.ok(byteLen(out) <= 20 * 1024 + 64) // + marker overhead
-  assert.ok(out.includes('final question')) // newest block always kept
+  assert.ok(byteLen(out) <= 20 * 1024)
+  assert.ok(out.endsWith('final question'))
+  for (const h of ['[tool_result a c1]', '[tool_result b c2]', '[tool_result c c3]']) assert.ok(out.includes(h), h)
+  assert.ok(!out.includes('earlier message(s) omitted'))
+  assert.equal((out.match(/middle omitted/g) || []).length, 3)
+})
+
+test('renderDelta keeps small results whole and squeezes only the large one', () => {
+  const delta = [
+    { role: 'tool', tool_call_id: 'c1', name: 'small', content: 'tiny output' },
+    { role: 'tool', tool_call_id: 'c2', name: 'big', content: 'HEAD' + 'x'.repeat(40 * 1024) + 'TAIL-ERROR' },
+  ]
+  const out = renderDelta(delta, { maxBytes: 8 * 1024 })
+  assert.ok(byteLen(out) <= 8 * 1024)
+  assert.ok(out.includes('tiny output'))
+  assert.ok(out.includes('HEAD') && out.includes('TAIL-ERROR')) // head + tail both survive
+  assert.ok(out.includes('re-run the tool'))
+})
+
+test('renderDelta still drops oldest text when conversation text alone overflows', () => {
+  const delta = [
+    { role: 'user', content: 'OLD-' + 'a'.repeat(6000) },
+    { role: 'user', content: 'NEW-QUESTION' },
+  ]
+  const out = renderDelta(delta, { maxBytes: 4096 })
+  assert.ok(byteLen(out) <= 4096)
+  assert.ok(!out.includes('OLD-'))
   assert.ok(out.includes('earlier message(s) omitted'))
-  assert.ok(!out.includes('[tool_result a c1]')) // oldest dropped
+  assert.ok(out.endsWith('NEW-QUESTION'))
+})
+
+test('renderTranscript squeezes stale tool results, keeps fresh ones and all dialogue', () => {
+  const messages = [
+    { role: 'user', content: 'FIRST-ASK' },
+    { role: 'assistant', content: '', tool_calls: [{ id: 'c1', function: { name: 'read', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'c1', name: 'read', content: 'STALE' + 's'.repeat(12 * 1024) },
+    { role: 'assistant', content: 'MIDDLE-ANSWER', tool_calls: [{ id: 'c2', function: { name: 'read', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'c2', name: 'read', content: 'FRESH' + 'f'.repeat(8 * 1024) },
+  ]
+  const out = renderTranscript(messages, '', { maxBytes: UPSTREAM_TEXT_LIMIT })
+  assert.ok(out.includes('FIRST-ASK') && out.includes('MIDDLE-ANSWER'))
+  assert.ok(out.includes('STALE') && out.includes('middle omitted')) // stale result squeezed, not dropped
+  assert.ok(out.includes('f'.repeat(8 * 1024))) // fresh result fits whole
+  assert.ok(byteLen(out) < 16 * 1024)
 })
