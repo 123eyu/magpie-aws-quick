@@ -155,9 +155,6 @@ function makeSessions(opts) {
 
 export const AwsQuickAuthPlugin = async (_input, options) => {
   const opts = options && typeof options === 'object' ? options : {}
-  // Debug diagnostics (MAGPIE_AWS_QUICK_DEBUG=1) append here — plugin-host
-  // stderr is not reliably captured by the magpie app.
-  opts.debugFile = path.join(opts.sessionDir || defaultStoreDir(), 'debug.log')
   const outpostMgr = createOutpostManager(opts)
   const sessions = makeSessions(opts)
   return {
