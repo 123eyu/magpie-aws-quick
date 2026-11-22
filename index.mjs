@@ -8,10 +8,10 @@
  * Sign-in methods (all keyless):
  *   1. Browser OAuth, two flavours (no desktop app): the plugin replays the
  *      app's own OIDC+PKCE flow — magpie opens quick.aws.com/sn itself, or
- *      the "copy sign-in link" flavour only shows the URL to paste into a
- *      browser — the plugin catches the localhost callback, registers a
- *      dynamic OIDC client, exchanges the code, reads user-info — then chats
- *      over the stored token directly with auto-refresh.
+ *      the "copy sign-in link" flavour only shows the URL plus a box for the
+ *      browser's final address — the plugin catches the localhost callback,
+ *      registers a dynamic OIDC client, exchanges the code, reads user-info —
+ *      then chats over the stored token directly with auto-refresh.
  *   2. Local credentials: on Windows reads the desktop app's stored session
  *      straight from Credential Manager (refresh via OIDC, written back so the
  *      app keeps working); otherwise spawns the bundled agent's
@@ -47,7 +47,7 @@ import { createSessionStore, SESSION_DEFAULTS } from './lib/sessions.mjs'
 import { MODELS } from './lib/translate.mjs'
 import {
   createSessionStore as createOAuthStore, createDirectBackend,
-  startOAuthLogin, keyForSession, OAuthError, defaultStoreDir,
+  startOAuthLogin, takeDiscovery, keyForSession, OAuthError, defaultStoreDir,
 } from './lib/oauth.mjs'
 import { createCredManBackend, loadCredManSession } from './lib/credman.mjs'
 import { quickUsage } from './lib/usage.mjs'
@@ -188,6 +188,32 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
     }
     return { key, apiKey: 'aws-quick-local', mgr: outpostMgr }
   }
+  // Persist a finished OAuth login as an api-type account and return magpie's
+  // success result.
+  function saveOAuthSession(sess) {
+    const store = createOAuthStore({ dir: opts.sessionDir })
+    const key = keyForSession(sess)
+    store.set(key, sess)
+    const who = sess.email || sess.display_name || sess.aws_account_id || ''
+    return { type: 'success', key, metadata: { mode: 'oauth', account: who } }
+  }
+  const startOAuthOpts = (signal, extra = {}) => ({
+    stage: opts.buildStage || 'prod',
+    port: Number(opts.oauthPort) || undefined,
+    timeoutMs: Number(opts.oauthTimeoutMs) || undefined,
+    signal,
+    fetchImpl: opts.fetchImpl,
+    log: opts.log,
+    ...extra,
+  })
+  const wireAbort = (s, cancel) => {
+    const onAbort = () => cancel()
+    if (s) {
+      if (s.aborted) onAbort()
+      else s.addEventListener('abort', onAbort, { once: true })
+    }
+    return () => s?.removeEventListener('abort', onAbort)
+  }
   // Browser OAuth sign-in as a magpie "oauth" method: authorize starts the
   // localhost callback server and hands magpie the sign-in URL — magpie opens
   // the browser itself unless the method sets `opened` — and callback waits
@@ -202,14 +228,7 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
       authorize: async (_inputs, { signal } = {}) => {
         let started
         try {
-          started = await startOAuthLogin({
-            stage: opts.buildStage || 'prod',
-            port: Number(opts.oauthPort) || undefined,
-            timeoutMs: Number(opts.oauthTimeoutMs) || undefined,
-            signal,
-            fetchImpl: opts.fetchImpl,
-            log: opts.log,
-          })
+          started = await startOAuthLogin(startOAuthOpts(signal))
         } catch (e) {
           return { type: 'failed', error: `Amazon Quick 账号登录失败：${String(e?.message ?? e).slice(0, 300)}` }
         }
@@ -220,24 +239,66 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
           instructions,
           ...(opened ? { opened: true } : {}),
           callback: async (_code, { signal: s } = {}) => {
-            const onAbort = () => cancel()
-            if (s) {
-              if (s.aborted) onAbort()
-              else s.addEventListener('abort', onAbort, { once: true })
-            }
+            const unwire = wireAbort(s, cancel)
             try {
               const sess = await done
-              const store = createOAuthStore({ dir: opts.sessionDir })
-              const key = keyForSession(sess)
-              store.set(key, sess)
-              const who = sess.email || sess.display_name || sess.aws_account_id || ''
-              return { type: 'success', key, metadata: { mode: 'oauth', account: who } }
+              return saveOAuthSession(sess)
             } catch (e) {
               const msg = String(e?.message ?? e)
               if (e instanceof OAuthError && e.kind === 'abort') return { type: 'failed', error: '登录已取消' }
               return { type: 'failed', error: `Amazon Quick 账号登录失败：${msg.slice(0, 300)}` }
             } finally {
-              s?.removeEventListener('abort', onAbort)
+              unwire()
+            }
+          },
+        }
+      },
+    }
+  }
+  // The "copy sign-in link" variant: magpie shows a paste field (method
+  // 'code') instead of opening anything — the user pastes the browser's
+  // address-bar URL after login. A browser on another computer can't reach
+  // the 127.0.0.1 callback: the first paste saves the hop-1 discovery fields
+  // and asks for a second attempt, whose paste finishes the login.
+  function oauthPasteSignIn() {
+    return {
+      type: 'oauth',
+      label: '复制登录地址（不自动打开浏览器）',
+      labels: { zh: '复制登录地址（不自动打开浏览器）', 'zh-TW': '複製登錄地址（不自動打開瀏覽器）', en: "Copy sign-in link (don't open a browser)" },
+      authorize: async (_inputs, { signal } = {}) => {
+        const dir = opts.sessionDir ?? defaultStoreDir()
+        const discovery = takeDiscovery(dir)
+        let started
+        try {
+          started = await startOAuthLogin(startOAuthOpts(signal, { discovery, dir }))
+        } catch (e) {
+          return { type: 'failed', error: `Amazon Quick 账号登录失败：${String(e?.message ?? e).slice(0, 300)}` }
+        }
+        const { url, submit, cancel } = started
+        return {
+          url,
+          method: 'code',
+          opened: true,
+          instructions: discovery
+            ? '已记住上次的账号信息。复制下方链接到浏览器里登录，完成后把地址栏里的完整地址粘贴到下面。'
+            : '复制下方链接，到你要用的浏览器里打开并登录。登录完把浏览器地址栏里的完整地址粘贴到下面（页面打不开也没关系，复制地址就行）。',
+          callback: async (code, { signal: s } = {}) => {
+            const unwire = wireAbort(s, cancel)
+            try {
+              const sess = await submit(code)
+              return saveOAuthSession(sess)
+            } catch (e) {
+              const msg = String(e?.message ?? e)
+              if (e instanceof OAuthError && e.kind === 'discovery-saved') {
+                return { type: 'failed', error: '账号信息已记下。请再点一次「复制登录地址」，登录后把地址栏的地址粘贴回来（15 分钟内有效）。' }
+              }
+              if (e instanceof OAuthError && e.kind === 'paste') return { type: 'failed', error: msg }
+              if (e instanceof OAuthError && e.kind === 'abort') return { type: 'failed', error: '登录已取消' }
+              return { type: 'failed', error: `Amazon Quick 账号登录失败：${msg.slice(0, 300)}` }
+            } finally {
+              unwire()
+              // the paste flow is done one way or another: close the listener
+              cancel()
             }
           },
         }
@@ -264,12 +325,7 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
           labels: { zh: '账号登录（浏览器 OAuth，无需桌面端）', 'zh-TW': '帳號登錄（瀏覽器 OAuth，無需桌面端）', en: 'Browser sign-in (OAuth, no desktop app)' },
           instructions: '在打开的页面完成 Amazon 登录；如果打开的不是你要用的浏览器，复制下面的链接到那个浏览器里打开。登录需在本机完成。',
         }),
-        oauthSignIn({
-          label: '复制登录地址（不自动打开浏览器）',
-          labels: { zh: '复制登录地址（不自动打开浏览器）', 'zh-TW': '複製登錄地址（不自動打開瀏覽器）', en: "Copy sign-in link (don't open a browser)" },
-          instructions: '复制下面的链接，粘贴到你用来登录 Amazon 的浏览器里打开。登录回调地址是 127.0.0.1，所以浏览器必须在运行 magpie 的这台电脑上。',
-          opened: true,
-        }),
+        oauthPasteSignIn(),
         {
           // No prompts and no key field: magpie calls authorize directly.
           // On Windows we first try reading the app's session straight from

@@ -1,11 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
   createSessionStore, runOAuthLogin, startOAuthLogin, refreshSession, buildSession,
-  keyForSession, createDirectBackend, OAuthError,
+  keyForSession, createDirectBackend, OAuthError, rememberDiscovery, takeDiscovery,
 } from '../lib/oauth.mjs'
 
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'oauth-test-'))
@@ -142,12 +142,157 @@ test('startOAuthLogin cancel() rejects done with kind abort and closes the serve
   assert.ok(refused, 'callback server still accepting connections after cancel()')
 })
 
+test('a stale-nonce or wrong-state callback does not end the login', async () => {
+  const { url, done, cancel } = await startOAuthLogin({
+    fetchImpl: mockFetch(),
+    log: () => {},
+    timeoutMs: 15000,
+  })
+  const port = new URL(url).searchParams.get('qwSurface').split(':')[2]
+  // stray requests get the fail page but the login keeps waiting
+  const r1 = await fetch(`http://127.0.0.1:${port}/callback?nonce=wrong&issuerUrl=x`)
+  assert.equal(r1.status, 400)
+  const r2 = await fetch(`http://127.0.0.1:${port}/?code=x&state=wrong`)
+  assert.equal(r2.status, 400)
+  await fakeBrowser(url)
+  const sess = await done
+  assert.equal(sess.jwt, 'idt-1')
+  cancel()
+})
+
+test('submit() completes the login from a pasted hop-2 URL', async () => {
+  const { url, done, submit, cancel } = await startOAuthLogin({
+    fetchImpl: mockFetch(),
+    log: () => {},
+    timeoutMs: 15000,
+  })
+  const surface = new URL(url).searchParams.get('qwSurface')
+  const [nonce, port] = surface.split(':').slice(1)
+  // hop 1 hits the server (client registration runs) but the browser never
+  // follows the 302 — its final address is pasted back instead
+  const cb = `http://127.0.0.1:${port}/callback?nonce=${encodeURIComponent(nonce)}` +
+    `&issuerUrl=${encodeURIComponent('https://idc.example.com/issuer')}` +
+    `&tenantUrl=${encodeURIComponent('https://qbs-cell.dp.appintegrations.us-east-1.prod.plato.ai.aws.dev')}` +
+    `&idcRegion=us-east-1`
+  const r1 = await fetch(cb, { redirect: 'manual' })
+  assert.equal(r1.status, 302)
+  const state = new URL(r1.headers.get('location')).searchParams.get('state')
+  const sess = await submit(`http://127.0.0.1:${port}/?code=authcode-1&state=${encodeURIComponent(state)}`)
+  assert.equal(sess.jwt, 'idt-1')
+  assert.equal((await done).email, 'u@x.com')
+  cancel()
+})
+
+test('submit() with a pasted hop-1 URL saves discovery; takeDiscovery is one-shot', async () => {
+  const dir = tmp()
+  try {
+    const { url, submit, cancel } = await startOAuthLogin({
+      fetchImpl: mockFetch(),
+      log: () => {},
+      timeoutMs: 15000,
+      dir,
+    })
+    const surface = new URL(url).searchParams.get('qwSurface')
+    const [nonce, port] = surface.split(':').slice(1)
+    const hop1 = `http://127.0.0.1:${port}/callback?nonce=${encodeURIComponent(nonce)}` +
+      `&issuerUrl=${encodeURIComponent('https://idc.example.com/issuer')}` +
+      `&tenantUrl=${encodeURIComponent('https://tenant.example.com')}` +
+      `&account=acct-1&idcInstanceId=inst-1&idcRegion=us-east-1`
+    await assert.rejects(submit(hop1), (e) => e instanceof OAuthError && e.kind === 'discovery-saved')
+    const file = path.join(dir, 'oauth-discovery.json')
+    const saved = JSON.parse(readFileSync(file, 'utf8'))
+    assert.equal(saved.issuer_url, 'https://idc.example.com/issuer')
+    assert.equal(saved.tenant_url, 'https://tenant.example.com')
+    assert.equal(saved.account, 'acct-1')
+    assert.equal(saved.idc_instance_id, 'inst-1')
+    assert.equal(saved.idc_region, 'us-east-1')
+    assert.ok(saved.saved_at > 0)
+    assert.equal(saved.refresh_token, undefined)
+    // one-shot: the first take returns it, the second finds nothing
+    const d = takeDiscovery(dir)
+    assert.equal(d.issuer_url, 'https://idc.example.com/issuer')
+    assert.equal(d.idc_region, 'us-east-1')
+    assert.equal(takeDiscovery(dir), null)
+    cancel()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('takeDiscovery returns null for a stale saved_at; rememberDiscovery round-trips', () => {
+  const dir = tmp()
+  try {
+    rememberDiscovery(dir, {
+      issuer_url: 'https://idc.example.com/i',
+      tenant_url: 'https://t.example.com',
+      account: 'a',
+      idc_instance_id: 'i',
+      idc_region: 'us-west-2',
+    })
+    // age the entry past the 15-minute window
+    const file = path.join(dir, 'oauth-discovery.json')
+    const data = JSON.parse(readFileSync(file, 'utf8'))
+    data.saved_at = Date.now() - 16 * 60 * 1000
+    writeFileSync(file, JSON.stringify(data))
+    assert.equal(takeDiscovery(dir), null)
+    assert.equal(takeDiscovery(dir), null) // file is gone even when stale
+    rememberDiscovery(dir, { issuer_url: 'https://idc.example.com/i2' })
+    const d = takeDiscovery(dir, 1000)
+    assert.equal(d.issuer_url, 'https://idc.example.com/i2')
+    assert.equal(d.tenant_url, '')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('startOAuthLogin with saved discovery skips hop 1 and returns the authorize URL', async () => {
+  const calls = []
+  const { url, done, submit, cancel } = await startOAuthLogin({
+    fetchImpl: mockFetch(calls),
+    log: () => {},
+    timeoutMs: 15000,
+    discovery: {
+      issuer_url: 'https://idc.example.com/issuer',
+      tenant_url: 'https://qbs-cell.dp.appintegrations.us-east-1.prod.plato.ai.aws.dev',
+      account: 'acct-1',
+      idc_instance_id: 'inst-1',
+      idc_region: 'us-east-1',
+    },
+  })
+  assert.ok(url.startsWith('https://oidc.us-east-1.amazonaws.com/authorize'), url)
+  const u = new URL(url)
+  assert.equal(u.searchParams.get('client_id'), 'cid-1')
+  // the client was registered before any browser action
+  assert.deepEqual(calls.map((c) => c.url.split('/').pop()), ['register'])
+  // and the pasted hop-2 address still completes the login
+  const port = new URL(u.searchParams.get('redirect_uri')).port
+  const sess = await submit(`http://127.0.0.1:${port}/?code=authcode-1&state=${encodeURIComponent(u.searchParams.get('state'))}`)
+  assert.equal(sess.jwt, 'idt-1')
+  assert.equal((await done).email, 'u@x.com')
+  assert.deepEqual(calls.map((c) => c.url.split('/').pop()), ['register', 'token', 'user-info'])
+  cancel()
+})
+
+test('submit() after the flow already completed returns the session', async () => {
+  const { url, done, submit } = await startOAuthLogin({
+    fetchImpl: mockFetch(),
+    log: () => {},
+    timeoutMs: 15000,
+  })
+  await fakeBrowser(url)
+  const sess = await done
+  // whatever the user pastes now — typically the success page's own address —
+  // just hands the finished session back
+  const again = await submit('http://127.0.0.1:1/?code=whatever&state=whatever')
+  assert.equal(again.jwt, sess.jwt)
+})
+
 test('login fails cleanly when the callback gets an error', async () => {
   await assert.rejects(() => runOAuthLogin({
     fetchImpl: mockFetch(),
     openBrowser: async (url) => {
-      const port = new URL(url).searchParams.get('qwSurface').split(':')[2]
-      await fetch(`http://127.0.0.1:${port}/callback?nonce=wrong&error=access_denied`)
+      const [nonce, port] = new URL(url).searchParams.get('qwSurface').split(':').slice(1)
+      await fetch(`http://127.0.0.1:${port}/callback?nonce=${encodeURIComponent(nonce)}&error=access_denied`)
     },
     log: () => {},
     timeoutMs: 15000,
