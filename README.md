@@ -172,8 +172,8 @@ magpie login aws-quick        # pick a sign-in method when prompted
 - **Message size**: the whole `user_message` frame is hard-capped at 64 KB
   server-side (`text` + `system_prompt` share it). Oversized system prompts /
   tool schemas / history are compacted automatically (schema de-annotation,
-  oldest-first history trimming, capped tool results); truncation is surfaced
-  as a `> [quick] …truncated` note.
+  tool-spec lite fallback, oldest-first history trimming, capped tool
+  results); truncation is surfaced as a `> [quick] …truncated` note.
 
 ## Security & credentials
 

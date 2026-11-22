@@ -140,6 +140,35 @@ test('system prompt shares the 64KB frame budget with text', async () => {
   assert.ok(byteLen(p.text) <= 60 * 1024 - byteLen(p.system_prompt))
 })
 
+test('huge system prompt + large toolset still delivers the user question', async () => {
+  // Regression: a preamble exceeding the frame budget used to be tail-cut,
+  // which ate the user's message entirely — the model saw only tool specs.
+  const tools = Array.from({ length: 25 }, (_, i) => ({
+    type: 'function',
+    function: {
+      name: `tool_${i}`,
+      description: `does thing ${i} `.padEnd(800, 'd'),
+      parameters: {
+        type: 'object',
+        properties: { arg: { type: 'string', description: 'x'.repeat(400) } },
+        required: ['arg'],
+      },
+    },
+  }))
+  await req({
+    model: 'fast',
+    messages: [
+      { role: 'system', content: 'S'.repeat(40 * 1024) },
+      { role: 'user', content: 'FINAL_QUESTION_MARKER what is 2+2' },
+    ],
+    tools,
+  })
+  const p = fake.state.userMessages.at(-1).payload
+  assert.ok(p.text.includes('FINAL_QUESTION_MARKER'), 'user question must survive the frame cap')
+  assert.ok(p.text.includes('[Client tool calling]'), 'tool convention must survive too')
+  assert.ok(byteLen(p.system_prompt) + byteLen(p.text) <= 62 * 1024)
+})
+
 test('thread reuse: extended conversation continues the same thread with delta only', async () => {
   const sessions = createSessionStore()
   const u1 = { role: 'user', content: 'remember teal' }

@@ -10,6 +10,27 @@ test('textOf handles strings, parts arrays, and junk', () => {
   assert.equal(textOf(42), '42')
 })
 
+test('textOf understands Anthropic/Responses-style content parts', () => {
+  // Responses API spellings
+  assert.equal(textOf([{ type: 'input_text', text: 'hello' }]), 'hello')
+  assert.equal(textOf([{ type: 'output_text', text: 'world' }]), 'world')
+  // Anthropic tool blocks inside content arrays
+  assert.equal(textOf([{ type: 'tool_result', content: 'tool output' }]), 'tool output')
+  assert.equal(
+    textOf([{ type: 'tool_result', content: [{ type: 'text', text: 'nested' }] }]),
+    'nested',
+  )
+  assert.equal(
+    textOf([{ type: 'tool_use', name: 'Read', input: { path: '/a' } }]),
+    '[called tool Read({"path":"/a"})]',
+  )
+  // reasoning blocks contribute nothing
+  assert.equal(
+    textOf([{ type: 'thinking', thinking: 'secret' }, { type: 'text', text: 'answer' }]),
+    'answer',
+  )
+})
+
 test('modeFor maps model ids to agent modes', () => {
   assert.equal(modeFor('fast'), 'fast')
   assert.equal(modeFor('balanced'), 'balanced')

@@ -136,8 +136,8 @@ magpie login aws-quick        # 按提示选择登录方式
 - **多窗口/并发**：同一 QuickSocket 上不同 thread 可并行 turn；同一 thread 的并发请求会被拒绝（`busy`）。
 - **消息体积**：整个 `user_message` 帧服务端上限 64KB（`text` 与
   `system_prompt` 共享）。超大 system prompt / 工具 schema / 会话历史会自动
-  压缩（schema 去注解、历史从旧到新裁、tool_result 封顶），截断时
-  回复里会带 `> [quick] …已截断` 提示。
+  压缩（schema 去注解、工具规格 lite 降级、历史从旧到新裁、tool_result 封顶），
+  截断时回复里会带 `> [quick] …已截断` 提示。
 - **OAuth 登录仅限 consumer/social 通道**：重放的是桌面端 `quick.aws.com/sn`
   的 `social` provider 流程。走企业 IdP 的租户如果 issuer 不是 Amazon 社交 IdP
   可能无法完成——这种情况请改用本地凭据方式。OAuth 路径以空 `outpostId` 运行
