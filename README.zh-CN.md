@@ -114,9 +114,11 @@ Quick 的 `user_message` 用 `agent_mode` 选择档位，服务端再路由到�
 ### 2. 安装插件
 
 ```bash
-magpie plugin add <本目录或 git URL>
-magpie login aws-quick        # 按提示选择登录方式
+magpie plugin add magpie-aws-quick   # 从 npm 安装；也可以写本地目录或 git URL
+magpie login aws-quick              # 按提示选择登录方式
 ```
+
+在 magpie 应用里，也可以到 **插件** 页搜索 "Amazon Quick" 直接安装。
 
 **替代方案：独立 OpenAI 兼容代理**——`node bin/serve.mjs` 把同一个适配层
 以 OpenAI Chat Completions 形式挂在 `127.0.0.1:$PORT/v1`（默认 3426），
@@ -135,6 +137,9 @@ magpie login aws-quick        # 按提示选择登录方式
   约 1 小时有效的 id_token 过期时用存的 refresh_token 自动续期（轮换后的
   refresh_token 也会写回文件）。请求时**不再拉起 outpost**，WS 直连租户的
   `ws_host`。
+- **复制登录地址（不自动打开浏览器）**：同样的浏览器 OAuth 流程，但 magpie
+  不会自动打开浏览器——复制链接，粘贴到你用来登录 Amazon 的浏览器里打开。
+  登录回调是 `127.0.0.1`，所以那个浏览器必须和 magpie 在同一台电脑上。
 - **本地凭据**：Windows 上直接读 Credential Manager 里的会话直连聊天
   （OIDC 自动续期 + 写回，桌面端 token 保持有效）；其他平台或读取失败时
   回退到拉起内置 outpost 并调用 `/auth/sncs-session` 校验；未登录会明确

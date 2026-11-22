@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import {
-  createSessionStore, runOAuthLogin, refreshSession, buildSession,
+  createSessionStore, runOAuthLogin, startOAuthLogin, refreshSession, buildSession,
   keyForSession, createDirectBackend, OAuthError,
 } from '../lib/oauth.mjs'
 
@@ -102,6 +102,44 @@ test('full OAuth login flow: callback server + register + exchange + user-info',
   assert.equal(exch.grantType, 'authorization_code')
   assert.equal(exch.code, 'authcode-1')
   assert.ok(exch.codeVerifier)
+})
+
+test('startOAuthLogin returns the sign-in URL before any browser action; done resolves via the flow', async () => {
+  const { url, done, cancel } = await startOAuthLogin({
+    fetchImpl: mockFetch(),
+    log: () => {},
+    timeoutMs: 15000,
+  })
+  assert.equal(typeof cancel, 'function')
+  assert.ok(url.includes('qwSurface=desktop%3A'), `url carries the encoded surface: ${url}`)
+  // driving the mock browser against the returned url completes `done`
+  await fakeBrowser(url)
+  const sess = await done
+  assert.equal(sess.jwt, 'idt-1')
+  assert.equal(sess.ws_host, 'qbs-cell.dp.appintegrations.us-east-1.prod.plato.ai.aws.dev')
+  assert.equal(sess.email, 'u@x.com')
+})
+
+test('startOAuthLogin cancel() rejects done with kind abort and closes the server', async () => {
+  const { url, done, cancel } = await startOAuthLogin({
+    fetchImpl: mockFetch(),
+    log: () => {},
+    timeoutMs: 15000,
+  })
+  cancel()
+  await assert.rejects(done, (e) => e instanceof OAuthError && e.kind === 'abort' && /cancelled/.test(e.message))
+  // the callback server is closed: its port refuses connections
+  const port = new URL(url).searchParams.get('qwSurface').split(':')[2]
+  let refused = false
+  for (let i = 0; i < 40 && !refused; i++) {
+    try {
+      await fetch(`http://127.0.0.1:${port}/`)
+    } catch {
+      refused = true
+    }
+    if (!refused) await new Promise((r) => setTimeout(r, 50))
+  }
+  assert.ok(refused, 'callback server still accepting connections after cancel()')
 })
 
 test('login fails cleanly when the callback gets an error', async () => {

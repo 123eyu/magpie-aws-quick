@@ -25,6 +25,14 @@
     "aws-quick",
     "aws"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/httpdone/magpie-aws-quick.git"
+  },
+  "homepage": "https://github.com/httpdone/magpie-aws-quick#readme",
+  "bugs": {
+    "url": "https://github.com/httpdone/magpie-aws-quick/issues"
+  },
   "license": "MIT",
   "engines": {
     "node": ">=22"
@@ -32,6 +40,7 @@
   "magpie": {
     "name": "Amazon Quick",
     "maxConcurrency": 2,
+    "icon": "https://aws.amazon.com/favicon.ico",
     "summary": {
       "en": "Your own Amazon Quick account as a provider.",
       "zh": "用你自己的 Amazon Quick 账号作为模型提供方。"
