@@ -430,6 +430,11 @@ test('tool_call convention: <tool_call> text becomes OpenAI tool_calls', async (
     assert.ok(deltaText.includes('[tool_result'), 'tool result rendered into delta')
     assert.ok(deltaText.includes(callId))
     assert.ok(!deltaText.includes('weather in Paris?') || deltaText.includes('[tool_result'))
+    // the thread already holds the full spec: only the short reminder rides again
+    assert.ok(deltaText.includes('Client tool calling — reminder'), 'reused turn carries the reminder')
+    assert.ok(deltaText.includes('get_weather'), 'reminder names the tools')
+    assert.ok(!deltaText.includes('Tools provided by the client'), 'full spec is not re-sent on a reused thread')
+    assert.ok(byteLen(deltaText) < byteLen(sent), 'reused turn is smaller than the first')
   } finally {
     await toolFake.close()
   }
@@ -698,6 +703,32 @@ test('non-direct outpost keeps large images inline-only (no upload calls)', asyn
     assert.equal(p.attachments, undefined)
     assert.ok(p.text.includes('1 image(s) not delivered'))
     assert.equal(fetchCalls, 0, 'local-outpost path must not call the upload API')
+  } finally {
+    await f.close()
+  }
+})
+
+test('usage across agentic steps reports the latest prompt, not the sum', async () => {
+  const f = await startFakeQuick({
+    script: () => [
+      { type: 'text_delta', payload: { delta: 'step one ' } },
+      { type: 'turn_usage', payload: { input_tokens: 1000, cache_read_tokens: 70000, output_tokens: 40 } },
+      { type: 'text_delta', payload: { delta: 'step two' } },
+      { type: 'turn_usage', payload: { input_tokens: 1200, cache_read_tokens: 71000, output_tokens: 60 } },
+      { type: 'message_complete', payload: { text: 'step one step two' } },
+    ],
+  })
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'smart', messages: [{ role: 'user', content: 'x' }] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'steps-acct' },
+    })
+    const { usage } = await res.json()
+    assert.equal(usage.prompt_tokens, 72200, 'latest step context, not 1000+70000+1200+71000')
+    assert.equal(usage.prompt_tokens_details.cached_tokens, 71000)
+    assert.equal(usage.completion_tokens, 100, 'completions accumulate')
+    assert.equal(usage.total_tokens, 72300)
   } finally {
     await f.close()
   }

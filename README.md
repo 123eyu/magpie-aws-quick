@@ -191,7 +191,10 @@ widget, which also assumes the allowance resets on the 1st of next month.
   and `message_complete.tool_calls` is always empty. OpenAI `tools` sent by
   the client are injected as a `<tool_call>{json}</tool_call>` text convention
   and parsed back into standard `tool_calls`; `tool`-role results render as
-  `[tool_result …]` continuing the same thread. Reliability depends on the
+  `[tool_result …]` continuing the same thread. The full tool spec is sent
+  once per thread; later turns on a reused thread carry only a short
+  reminder, because everything in the message stays in Quick's thread
+  history and counts toward the context. Reliability depends on the
   model honoring the convention — verified stable under
   `tool_choice:'required'` for smart/advanced; occasionally the model answers
   directly with its own tools (e.g. web search) instead, which shows up as a

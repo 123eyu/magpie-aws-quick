@@ -161,7 +161,9 @@ magpie login aws-quick              # 按提示选择登录方式
   `tool_start`/`tool_result` 等事件由它自己执行、客户端只观测，`message_complete.tool_calls`
   恒为空。客户端传入的 OpenAI `tools` 通过提示词注入为 `<tool_call>{json}</tool_call>`
   文本约定，由插件解析成标准 `tool_calls` 返回；`tool` 角色的结果渲染为
-  `[tool_result …]` 续接同一 thread。可靠性取决于模型遵守约定——已实测
+  `[tool_result …]` 续接同一 thread。完整的工具说明每个 thread 只发一次，
+  复用 thread 的后续轮次只带一段简短提醒：消息里的内容都会留在 Quick 的
+  thread 历史里、计入上下文。可靠性取决于模型遵守约定——已实测
   `tool_choice:'required'` 下 smart/advanced 均能稳定产出；模型偶尔会先用
   自带工具（如联网搜索）直接作答，此时表现为普通文本回复。
   Quick 自带工具的执行结果不会映射为 OpenAI `tool_calls`（那是它内部过程）。
