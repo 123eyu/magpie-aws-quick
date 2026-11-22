@@ -546,3 +546,36 @@ test('connect-time error frame fails fast instead of hanging', async () => {
     await f.close()
   }
 })
+
+function fakeMgr(fake) {
+  return {
+    ensure: async () => ({
+      outpostId: async () => 'o-extra',
+      session: async () => ({ ws_host: fake.wsHost, id_token: 't', usable_until: Math.floor(Date.now() / 1000) + 600 }),
+    }),
+  }
+}
+
+test('usage carries Quick cost, context window and resolved model', async () => {
+  const f = await startFakeQuick({
+    script: () => [
+      { type: 'text_delta', payload: { delta: 'ok' } },
+      { type: 'turn_usage', payload: { input_tokens: 10, output_tokens: 2, cache_write_tokens: 5, cost_usd: 0.0123, context_window: 1000000, resolved_model_id: 'us.anthropic.claude-opus-5-5' } },
+      { type: 'message_complete', payload: { text: 'ok' } },
+    ],
+  })
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'smart', messages: [{ role: 'user', content: 'x' }] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'usage-acct' },
+    })
+    const json = await res.json()
+    assert.equal(json.usage.prompt_tokens, 15)
+    assert.equal(json.usage.cost, 0.0123)
+    assert.equal(json.usage.context_window, 1000000)
+    assert.equal(json.usage.resolved_model_id, 'us.anthropic.claude-opus-5-5')
+  } finally {
+    await f.close()
+  }
+})
