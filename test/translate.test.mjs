@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { textOf, modeFor, effortFor, renderTranscript, renderDelta, byteLen, capText, UPSTREAM_TEXT_LIMIT, imagesOf, pickImages } from '../lib/translate.mjs'
+import { textOf, modeFor, effortFor, renderTranscript, renderDelta, byteLen, capText, UPSTREAM_TEXT_LIMIT, imagesOf, pickImages, MAX_UPLOAD_IMAGE_BYTES, MAX_UPLOADS, MAX_UPLOAD_TOTAL_BYTES } from '../lib/translate.mjs'
 
 test('textOf handles strings, parts arrays, and junk', () => {
   assert.equal(textOf('hi'), 'hi')
@@ -220,4 +220,57 @@ test('pickImages keeps images that fit the byte budget and counts the rest as sk
   assert.deepEqual(r.attachments[0], { type: 'image', name: 'image-1.jpg', size: 750, mimeType: 'image/jpeg', data: small })
   assert.equal(r.skipped, 2)
   assert.ok(r.bytes >= small.length && r.bytes <= 10 * 1024)
+  assert.deepEqual(r.toUpload, [])
+})
+
+const b64 = (bytes, fill = 7) => Buffer.alloc(bytes, fill).toString('base64')
+const imgPart = (data, mime = 'image/png') => ({ type: 'image_url', image_url: { url: `data:${mime};base64,${data}` } })
+
+test('pickImages queues oversized inline images for upload when enabled', () => {
+  const big = b64(100 * 1024)   // ~100 KB decoded — far over any inline budget
+  const small = b64(400)
+  const msgs = [{
+    role: 'user',
+    content: [imgPart(big), imgPart(small, 'image/jpeg'), { type: 'image_url', image_url: { url: 'https://example.com/x.png' } }],
+  }]
+  const r = pickImages(msgs, 4 * 1024, { upload: true })
+  // the small one still goes inline; numbering continues across both lists
+  assert.equal(r.attachments.length, 1)
+  assert.equal(r.attachments[0].name, 'image-2.jpg')
+  assert.equal(r.attachments[0].data, small)
+  assert.equal(r.toUpload.length, 1)
+  assert.deepEqual(r.toUpload[0], { mimeType: 'image/png', data: big, name: 'image-1.png' })
+  assert.equal(r.skipped, 1) // the remote URL
+  assert.equal(r.bytes, small.length + 256)
+
+  // same input without upload → the big image is skipped, not queued
+  const r2 = pickImages(msgs, 4 * 1024)
+  assert.equal(r2.attachments.length, 1)
+  assert.equal(r2.attachments[0].name, 'image-1.jpg')
+  assert.deepEqual(r2.toUpload, [])
+  assert.equal(r2.skipped, 2)
+})
+
+test('pickImages upload caps: count, per-image size and total bytes', () => {
+  const oneMiB = b64(1024 * 1024)
+  const five = Array.from({ length: MAX_UPLOADS + 1 }, () => imgPart(oneMiB))
+  const r = pickImages([{ role: 'user', content: five }], 1024, { upload: true })
+  assert.equal(r.toUpload.length, MAX_UPLOADS)
+  assert.equal(r.skipped, 1) // the 5th upload is over the per-turn cap
+
+  // a single image over 3 MiB decoded never uploads
+  const huge = b64(MAX_UPLOAD_IMAGE_BYTES + 1)
+  const r2 = pickImages([{ role: 'user', content: [imgPart(huge)] }], 1024, { upload: true })
+  assert.equal(r2.toUpload.length, 0)
+  assert.equal(r2.skipped, 1)
+  // exactly at the cap is allowed
+  const atCap = b64(MAX_UPLOAD_IMAGE_BYTES)
+  const r3 = pickImages([{ role: 'user', content: [imgPart(atCap)] }], 1024, { upload: true })
+  assert.equal(r3.toUpload.length, 1)
+
+  // total decoded budget: two ~2.6 MiB images exceed 5 MiB together
+  const two = b64(Math.floor(MAX_UPLOAD_TOTAL_BYTES / 2) + 1024)
+  const r4 = pickImages([{ role: 'user', content: [imgPart(two), imgPart(two)] }], 1024, { upload: true })
+  assert.equal(r4.toUpload.length, 1)
+  assert.equal(r4.skipped, 1)
 })

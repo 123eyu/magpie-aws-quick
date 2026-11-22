@@ -579,3 +579,126 @@ test('usage carries Quick cost, context window and resolved model', async () => 
     await f.close()
   }
 })
+
+// ---------- cloud image upload (direct backends) ----------
+
+const j = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } })
+
+/** fetchImpl stub for the three upload endpoints; records calls. */
+function uploadFetch(calls, { failUpload = false } = {}) {
+  return async (url, init = {}) => {
+    const u = String(url)
+    calls.push({ url: u, init })
+    if (u.includes('upload-attachment')) {
+      return failUpload ? j({ error: 'boom' }, 500) : j({ attachmentId: 'att-9' })
+    }
+    if (u.includes('attachment-dlp-status')) return j({ dlpJobStatus: 'COMPLETED', policyAction: 'ALLOW' })
+    if (u.includes('qbs-event')) {
+      return j({ eventResponse: { invokeAgentResponse: { api_response: { status: 200, body: { path: '/data/x/attached_files/image-1.png' } } } } })
+    }
+    return j({ error: `unexpected ${u}` }, 404)
+  }
+}
+
+function directMgr(fake, session = {}) {
+  return {
+    ensure: async () => ({
+      direct: true,
+      outpostId: async () => '',
+      session: async () => ({
+        ws_host: fake.wsHost, id_token: 'tok', tenant_url: '',
+        usable_until: Math.floor(Date.now() / 1000) + 600, ...session,
+      }),
+    }),
+  }
+}
+
+const bigImageMsg = (bytes = 150 * 1024, text = 'what is in this image?') => ({
+  role: 'user',
+  content: [
+    { type: 'text', text },
+    { type: 'image_url', image_url: { url: `data:image/png;base64,${Buffer.alloc(bytes, 5).toString('base64')}` } },
+  ],
+})
+
+test('direct backend uploads a large image and sends the workspace path', async () => {
+  const f = await startFakeQuick({})
+  const calls = []
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [bigImageMsg()] },
+      outpostMgr: directMgr(f),
+      options: { identity: 'upload-acct', fetchImpl: uploadFetch(calls), log: () => {} },
+    })
+    assert.equal(res.status, 200)
+    await res.json()
+    const p = f.state.userMessages.at(-1).payload
+    assert.equal(p.attachments.length, 1)
+    const a = p.attachments[0]
+    assert.equal(a.type, 'image')
+    assert.equal(a.name, 'image-1.png')
+    assert.equal(a.path, '/data/x/attached_files/image-1.png')
+    assert.equal(a.attachmentId, 'att-9')
+    assert.equal(a.data, undefined, 'uploaded entries carry no inline data')
+    assert.equal(a.size, 150 * 1024)
+    assert.match(a.contentSha256, /^[0-9a-f]{64}$/)
+    // the ~200 KB base64 did not eat the text budget: the question survives whole
+    assert.ok(p.text.includes('what is in this image?'))
+    assert.ok(!p.text.includes('not delivered'))
+
+    // upload ran against the ws_host-derived base (ws:// → http://)
+    assert.equal(calls.length, 3)
+    assert.ok(calls[0].url.startsWith(`http://${new URL(f.wsHost).host}/integration/quick-work/upload-attachment?`), calls[0].url)
+    const evt = JSON.parse(calls[2].init.body)
+    assert.equal(evt.eventBody.invokeAgent.path, `files/upload/${f.state.userMessages.at(-1).threadId}`)
+    assert.ok(evt.eventBody.invokeAgent.outpostId)
+  } finally {
+    await f.close()
+  }
+})
+
+test('failed image upload still answers 200 with a not-delivered note', async () => {
+  const f = await startFakeQuick({})
+  const calls = []
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [bigImageMsg()] },
+      outpostMgr: directMgr(f),
+      options: { identity: 'upload-fail-acct', fetchImpl: uploadFetch(calls, { failUpload: true }), log: () => {} },
+    })
+    assert.equal(res.status, 200)
+    await res.json()
+    const p = f.state.userMessages.at(-1).payload
+    assert.equal(p.attachments, undefined)
+    assert.ok(p.text.includes('1 image(s) not delivered'), p.text.slice(-200))
+    assert.equal(calls.length, 1, 'only the upload attempt ran')
+  } finally {
+    await f.close()
+  }
+})
+
+test('non-direct outpost keeps large images inline-only (no upload calls)', async () => {
+  const f = await startFakeQuick({})
+  let fetchCalls = 0
+  try {
+    const mgr = {
+      ensure: async () => ({
+        outpostId: async () => 'o-local',
+        session: async () => ({ ws_host: f.wsHost, id_token: 't', usable_until: Math.floor(Date.now() / 1000) + 600 }),
+      }),
+    }
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [bigImageMsg()] },
+      outpostMgr: mgr,
+      options: { identity: 'no-upload-acct', fetchImpl: async () => { fetchCalls++; return j({}) } },
+    })
+    assert.equal(res.status, 200)
+    await res.json()
+    const p = f.state.userMessages.at(-1).payload
+    assert.equal(p.attachments, undefined)
+    assert.ok(p.text.includes('1 image(s) not delivered'))
+    assert.equal(fetchCalls, 0, 'local-outpost path must not call the upload API')
+  } finally {
+    await f.close()
+  }
+})

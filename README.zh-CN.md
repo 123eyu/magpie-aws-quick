@@ -165,12 +165,14 @@ magpie login aws-quick              # 按提示选择登录方式
   `tool_choice:'required'` 下 smart/advanced 均能稳定产出；模型偶尔会先用
   自带工具（如联网搜索）直接作答，此时表现为普通文本回复。
   Quick 自带工具的执行结果不会映射为 OpenAI `tool_calls`（那是它内部过程）。
-- **图片只支持小图**：内联图片（`data:` URL、Anthropic base64 块、工具结果
-  里的图片）会作为 `user_message.attachments` 发出去，但 Quick 把图片的
-  base64 和文字算在同一个 64KB 帧里，大约 40KB 以内的图才能发；更大的图会
-  被丢弃，并在消息里注明。Quick 自己的上传接口只会把文件投递到已连接的
-  设备，直连会话没有设备，所以用不了。非图片文件（`file`/`input_file`）
-  仍是占位。
+- **图片：小图内联，大图走云端上传**：能放进消息帧的内联图片（`data:` URL、
+  Anthropic base64 块、工具结果里的图片）仍作为 `user_message.attachments`
+  的 base64 发出；更大的图（每张 ≤3MiB、每轮最多 4 张、合计 ≤5MiB、仅限
+  内联数据）会通过 Quick 自己的附件上传流程传到账号的云端会话工作区——
+  和 Quick 应用里附加文件是同一个位置。远程 URL 和非图片文件
+  （`file`/`input_file`）仍不支持；上传失败时会在消息里注明图片缺失。
+  云端上传需要直连会话（OAuth / 凭据管理器登录）；本地 outpost 回退路径
+  仍只支持内联。
 - **采样参数**：`temperature` 等不在协议内，传了也会被服务端忽略（`capabilities.temperature:false`）。
 - **会话与账号绑定**：thread 复用的 scope 里包含账号身份哈希；换号后旧 thread 自动失效重建。
 - **多窗口/并发**：同一 QuickSocket 上不同 thread 可并行 turn；同一 thread 的并发请求会被拒绝（`busy`）。

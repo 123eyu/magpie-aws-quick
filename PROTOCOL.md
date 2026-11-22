@@ -228,15 +228,40 @@ OpenAI `tool_calls`.
 
 ### 4.7 Image attachments (verified)
 
-`user_message.payload.attachments` takes the renderer's shape
-`{type:'image', name, size, mimeType, data}` with `data` as raw base64 or a
-`data:` URL; the model sees the image even on a device-less session. The
-attachment counts against the 64 KB frame: a 40 KB PNG works, a 200 KB one
-fails with a stream error. The desktop app uploads larger files via
-`POST {tenant_url}/integration/quick-work/upload-attachment` (→
-`{attachmentId}`, then DLP polling at `attachment-dlp-status`), but then
-delivers them to the local agent's workspace (`/files/upload/{session}`) and
-sends a `path`; an `attachmentId` alone is not visible to the model.
+`user_message.payload.attachments` takes two shapes. Small images ride
+inline as `{type:'image', name, size, mimeType, data}` with `data` as raw
+base64 — they count against the same ~64 KB frame as `text`, so only
+roughly ≤ 40 KB images get through.
+
+Larger images (verified live with a 337 KB PNG on a device-less session)
+go through Quick's own cloud attachment flow — no desktop/device needed:
+
+1. `POST {base}upload-attachment?name=<n>&contentType=<mime>&contentLength=<bytes>`
+   (Bearer id_token, `x-amzn-qs-internal-trace-id`, `Content-Type:
+   application/octet-stream`, body = raw image bytes) → `{attachmentId}`.
+2. Poll `GET {base}attachment-dlp-status?attachmentId=<id>` until
+   `dlpJobStatus` ∈ {COMPLETED, SKIPPED, NOT_APPLICABLE} — then
+   `policyAction` must be `ALLOW` — or ∈ {FAILED, ERROR} (fail).
+3. `POST {base}qbs-event` with `{"eventType":"invokeAgent","eventBody":
+   {"invokeAgent":{"path":"files/upload/<threadId>","queryParams":
+   {"_method":"POST"},"body":{"attachmentId":…},"workingSessionId":<uuid>,
+   "outpostId":<uuid>}}}`. `outpostId` MUST be a non-empty random UUID
+   (empty → HTTP 500 validation error) but does NOT need to match the
+   WebSocket's outpostId — the socket keeps its own (empty) id;
+   `workingSessionId` can be any fresh UUID. The response's
+   `eventResponse.invokeAgentResponse` may be an object or a JSON string;
+   unwrap `.api_response` if present, check `status` (if present) is 2xx,
+   and `.body` may be an object or JSON string — the file path is
+   `body.path || body.files[0].path`, a cloud workspace path like
+   `/data/s3files/users/…/sessions/<thread>/workspace/attached_files/<name>`.
+4. The attachment entry sent in `user_message.attachments` is
+   `{type:'image', name, size, mimeType, path, attachmentId,
+   contentSha256}` — `path` (not `attachmentId`, not `data`) is what makes
+   the model see the image.
+
+`{base}` = `{tenant_url}/integration/quick-work/` with `tenant_url` from
+the session; when it is empty, derive it from `ws_host` (`ws://`→`http://`,
+`wss://`→`https://`, bare host → `https://`).
 
 ### 4.8 Account usage (verified)
 

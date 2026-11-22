@@ -214,13 +214,37 @@ OpenAI `tool_calls`。
 
 ### 4.7 图片附件（已实测）
 
-`user_message.payload.attachments` 使用渲染层的格式
-`{type:'image', name, size, mimeType, data}`，`data` 可以是纯 base64 或
-`data:` URL；没有设备的会话里模型也能看到图片。附件算在 64KB 帧里：40KB 的
-PNG 可以，200KB 的会触发 stream error。桌面端发大文件时先
-`POST {tenant_url}/integration/quick-work/upload-attachment` 拿 `{attachmentId}`，
-再轮询 `attachment-dlp-status`，然后把文件投递到本地 agent 的工作区
-（`/files/upload/{session}`）并在消息里发 `path`；只带 `attachmentId` 模型看不到。
+`user_message.payload.attachments` 有两种形态。小图以内联格式
+`{type:'image', name, size, mimeType, data}` 发送，`data` 为纯 base64——
+它和 `text` 算在同一个 ~64KB 帧里，所以只有大约 ≤40KB 的图能直接发。
+
+更大的图（已在无设备会话上用 337KB PNG 实测）走 Quick 自己的云端附件
+流程，不需要桌面端/设备：
+
+1. `POST {base}upload-attachment?name=<n>&contentType=<mime>&contentLength=<bytes>`
+   （Bearer id_token，`x-amzn-qs-internal-trace-id`，`Content-Type:
+   application/octet-stream`，body 为图片原始字节）→ `{attachmentId}`。
+2. 轮询 `GET {base}attachment-dlp-status?attachmentId=<id>`，直到
+   `dlpJobStatus` ∈ {COMPLETED, SKIPPED, NOT_APPLICABLE}——此时
+   `policyAction` 必须是 `ALLOW`——或 ∈ {FAILED, ERROR}（失败）。
+3. `POST {base}qbs-event`，请求体 `{"eventType":"invokeAgent","eventBody":
+   {"invokeAgent":{"path":"files/upload/<threadId>","queryParams":
+   {"_method":"POST"},"body":{"attachmentId":…},"workingSessionId":<uuid>,
+   "outpostId":<uuid>}}}`。`outpostId` 必须是非空随机 UUID（传空 → HTTP
+   500 校验错误），但**不需要**和 WebSocket 的 outpostId 一致——socket
+   继续用自己的（空）id；`workingSessionId` 可以是任意新 UUID。响应里
+   `eventResponse.invokeAgentResponse` 可能是对象或 JSON 字符串；有
+   `.api_response` 就再解一层，`status`（存在时）须为 2xx，`.body` 也
+   可能是对象或 JSON 字符串——文件路径取 `body.path ||
+   body.files[0].path`，是云端工作区路径，形如
+   `/data/s3files/users/…/sessions/<thread>/workspace/attached_files/<name>`。
+4. `user_message.attachments` 里的条目为 `{type:'image', name, size,
+   mimeType, path, attachmentId, contentSha256}`——让模型看到图的是
+   `path`（不是 `attachmentId`，也不是 `data`）。
+
+`{base}` = `{tenant_url}/integration/quick-work/`，`tenant_url` 取自会话；
+为空时从 `ws_host` 推导（`ws://`→`http://`、`wss://`→`https://`、裸主机
+→ `https://`）。
 
 ### 4.8 账号用量（已实测）
 
