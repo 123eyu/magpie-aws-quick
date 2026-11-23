@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { startFakeQuick, defaultScript } from './helpers/fake-quick.mjs'
-import { handleChatCompletions, handleModels } from '../lib/handler.mjs'
+import { PLAIN_TEXT_NOTE, handleChatCompletions, handleModels } from '../lib/handler.mjs'
 import { createSessionStore } from '../lib/sessions.mjs'
 import { byteLen } from '../lib/translate.mjs'
 import { OutpostError } from '../lib/outpost.mjs'
@@ -1103,6 +1103,35 @@ test('after a native salvage, the next reused turn restates the call once, befor
     assert.equal(up3.threadId, up2.threadId)
     assert.ok(!up3.payload.text.includes('interrupted after you called these tools'), 'prefix must not repeat on the third turn')
     assert.ok(!up3.payload.text.includes('[called tool Write('))
+  } finally {
+    await f.close()
+  }
+})
+
+test('custom_prompt tells Quick not to emit Quick-app UI markup, but not for code', async () => {
+  const f = await startFakeQuick({
+    script: () => [
+      { type: 'text_delta', payload: { delta: 'ok' } },
+      { type: 'message_complete', payload: { text: 'ok' } },
+    ],
+  })
+  try {
+    const mgr = {
+      ensure: async () => ({
+        outpostId: async () => 'o-plain',
+        session: async () => ({ ws_host: f.wsHost, id_token: 't', usable_until: Math.floor(Date.now() / 1000) + 600 }),
+      }),
+    }
+    const res = await handleChatCompletions({
+      body: { model: 'smart', messages: [{ role: 'user', content: 'x' }] },
+      outpostMgr: mgr,
+      options: { identity: 'plain-acct' },
+    })
+    assert.equal(res.status, 200)
+    const cp = f.state.userMessages.at(-1).payload.custom_prompt
+    assert.ok(cp.includes(PLAIN_TEXT_NOTE))
+    assert.match(cp, /decision cards/)
+    assert.match(cp, /doesn't apply to code or file contents/)
   } finally {
     await f.close()
   }
