@@ -146,3 +146,17 @@ test('parser ignores malformed JSON blocks', () => {
   const end = p.end()
   assert.equal(end.dropped, true) // malformed block counts as dropped
 })
+
+test('parser recovers a call wrapped in stray markup (</invoke>, code fence)', () => {
+  const p = createToolCallParser()
+  const r1 = p.push('<tool_call>{"name":"Bash","arguments":{"command":"echo hi"}}</invoke>\n</tool_call>')
+  const r2 = p.push('<tool_call>```json\n{"name":"Read","arguments":{"file_path":"a.txt"}}\n```</tool_call>')
+  const end = p.end()
+  assert.deepEqual([...r1.calls, ...r2.calls].map((c) => c.name), ['Bash', 'Read'])
+  assert.equal(r1.calls[0].arguments.command, 'echo hi')
+  assert.equal(end.dropped, undefined)
+  // still rejects real garbage
+  const q = createToolCallParser()
+  q.push('<tool_call>{"name":"Bash","arguments":{"command":"echo</tool_call>')
+  assert.equal(q.end().dropped, true)
+})

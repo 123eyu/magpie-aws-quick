@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { startFakeQuick, defaultScript } from './helpers/fake-quick.mjs'
-import { PLAIN_TEXT_NOTE, handleChatCompletions, handleModels } from '../lib/handler.mjs'
+import { PLAIN_TEXT_NOTE, TOOLS_STILL_APPLY, handleChatCompletions, handleModels } from '../lib/handler.mjs'
 import { createSessionStore } from '../lib/sessions.mjs'
 import { byteLen } from '../lib/translate.mjs'
 import { OutpostError } from '../lib/outpost.mjs'
@@ -1130,8 +1130,10 @@ test('custom_prompt tells Quick not to emit Quick-app UI markup, but not for cod
     assert.equal(res.status, 200)
     const cp = f.state.userMessages.at(-1).payload.custom_prompt
     assert.ok(cp.includes(PLAIN_TEXT_NOTE))
-    assert.match(cp, /decision cards/)
-    assert.match(cp, /doesn't apply to code or file contents/)
+    assert.match(cp, /<decision>/)
+    assert.match(cp, /not code or file contents/)
+    assert.ok(!cp.includes(TOOLS_STILL_APPLY), 'no tools, no tool nudge')
+    assert.ok(!/plain text and Markdown only|artifacts/.test(cp), 'wording that made the model paste files instead of calling Write')
   } finally {
     await f.close()
   }
@@ -1155,6 +1157,35 @@ test('direct backend with a device id sends it as outpostId on the socket and th
     assert.equal(sc.outpostId, dev)
     const evt = JSON.parse(calls.find((c) => c.url.includes('qbs-event')).init.body)
     assert.equal(evt.eventBody.invokeAgent.outpostId, dev)
+  } finally {
+    await f.close()
+  }
+})
+
+test('with client tools, custom_prompt keeps the model on its tools after the formatting note', async () => {
+  const f = await startFakeQuick({
+    script: () => [
+      { type: 'text_delta', payload: { delta: 'ok' } },
+      { type: 'message_complete', payload: { text: 'ok' } },
+    ],
+  })
+  try {
+    const mgr = {
+      ensure: async () => ({
+        outpostId: async () => 'o-plain-tools',
+        session: async () => ({ ws_host: f.wsHost, id_token: 't', usable_until: Math.floor(Date.now() / 1000) + 600 }),
+      }),
+    }
+    const tools = [{ type: 'function', function: { name: 'Write', parameters: { type: 'object', properties: {} } } }]
+    const res = await handleChatCompletions({
+      body: { model: 'smart', tools, messages: [{ role: 'user', content: 'x' }] },
+      outpostMgr: mgr,
+      options: { identity: 'plain-tools-acct' },
+    })
+    assert.equal(res.status, 200)
+    const cp = f.state.userMessages.at(-1).payload.custom_prompt
+    assert.ok(cp.includes(PLAIN_TEXT_NOTE))
+    assert.ok(cp.indexOf(TOOLS_STILL_APPLY) < cp.indexOf(PLAIN_TEXT_NOTE), "tool nudge comes before the formatting note")
   } finally {
     await f.close()
   }
