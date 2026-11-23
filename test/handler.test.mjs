@@ -733,3 +733,139 @@ test('usage across agentic steps reports the latest prompt, not the sum', async 
     await f.close()
   }
 })
+
+// ---------- early headers / Quick tool notes / idle watchdog ----------
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+test('streaming returns headers after headerWaitMs even while Quick is silent', async () => {
+  let emitted = false
+  const f = await startFakeQuick({
+    script: async (p) => {
+      await sleep(600)
+      emitted = true
+      return defaultScript(p)
+    },
+  })
+  try {
+    const t0 = Date.now()
+    const res = await handleChatCompletions({
+      body: { model: 'fast', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'hdr-acct', headerWaitMs: 100, idleTimeoutMs: 10_000 },
+    })
+    const headerMs = Date.now() - t0
+    assert.equal(res.status, 200)
+    assert.ok(headerMs < 500, `headers took ${headerMs}ms — must not wait for first output`)
+    assert.equal(emitted, false, 'response returned before Quick produced any event')
+    const events = await readSse(res)
+    const text = events.map((e) => e.choices?.[0]?.delta?.content ?? '').join('')
+    assert.ok(text.includes('echo:'), 'stream still carries the late text')
+    assert.equal(events.at(-1).done, true)
+  } finally {
+    await f.close()
+  }
+})
+
+test('an error event before headerWaitMs still fails with an HTTP status', async () => {
+  const f = await startFakeQuick({
+    script: () => [{ type: 'error', payload: { message: 'pre-header boom' } }],
+  })
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'fast', stream: true, messages: [{ role: 'user', content: 'x' }] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'hdr-err-acct', headerWaitMs: 5_000 },
+    })
+    assert.equal(res.status, 502)
+    const j = await res.json()
+    assert.match(j.error.message, /boom/)
+  } finally {
+    await f.close()
+  }
+})
+
+test('tool_start surfaces as [Quick: name] reasoning; showQuickTools:false hides it', async () => {
+  const f = await startFakeQuick({
+    script: (p) => [
+      { type: 'tool_start', payload: { tool_name: 'generate_image' } },
+      { type: 'text_delta', payload: { delta: 'image done' } },
+      { type: 'message_complete', payload: { text: 'image done' } },
+    ],
+  })
+  try {
+    const body = { model: 'fast', messages: [{ role: 'user', content: 'make an image' }] }
+    const res = await handleChatCompletions({ body, outpostMgr: fakeMgr(f), options: { identity: 'qt-acct' } })
+    assert.equal(res.status, 200)
+    const j = await res.json()
+    assert.match(j.choices[0].message.reasoning_content ?? '', /\[Quick: generate_image\]/)
+
+    const res2 = await handleChatCompletions({ body, outpostMgr: fakeMgr(f), options: { identity: 'qt-acct', showQuickTools: false } })
+    const j2 = await res2.json()
+    assert.ok(!j2.choices[0].message.reasoning_content?.includes('[Quick:'), 'showQuickTools:false must hide tool notes')
+  } finally {
+    await f.close()
+  }
+})
+
+test('idle watchdog aborts a silent turn, sends stop_generation, never retries', async () => {
+  let calls = 0
+  const f = await startFakeQuick({
+    script: (p) => (++calls === 1 ? defaultScript(p) : []),
+  })
+  const sessions = createSessionStore()
+  try {
+    const u1 = { role: 'user', content: 'first' }
+    const r1 = await handleChatCompletions({
+      body: { model: 'fast', messages: [u1] },
+      outpostMgr: fakeMgr(f), sessions,
+      options: { identity: 'wd-acct', idleTimeoutMs: 10_000 },
+    })
+    assert.equal(r1.status, 200)
+    const rep1 = (await r1.json()).choices[0].message.content
+
+    const t0 = Date.now()
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [u1, { role: 'assistant', content: rep1 }, { role: 'user', content: 'second' }] },
+      outpostMgr: fakeMgr(f), sessions,
+      options: { identity: 'wd-acct', idleTimeoutMs: 200 },
+    })
+    const elapsed = Date.now() - t0
+    assert.equal(res.status, 503)
+    const j = await res.json()
+    assert.match(j.error.message, /idleTimeoutMs|没有进展/)
+    assert.ok(elapsed < 5_000, `watchdog took ${elapsed}ms`)
+    assert.equal(f.state.userMessages.length, 2, 'timeout must not trigger the stale-thread retry')
+    await sleep(150) // stop_generation rides the WS back to the fake
+    assert.equal(f.state.stopGenerations.length, 1)
+    assert.equal(f.state.stopGenerations[0].thread_id, f.state.userMessages[1].threadId)
+  } finally {
+    await f.close()
+  }
+})
+
+test('client abort during silence ends the turn promptly and sends stop_generation', async () => {
+  const f = await startFakeQuick({ script: () => [] })
+  const ac = new AbortController()
+  try {
+    const p = handleChatCompletions({
+      body: { model: 'fast', messages: [{ role: 'user', content: 'x' }] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'abort-acct', idleTimeoutMs: 60_000 },
+      signal: ac.signal,
+    })
+    await sleep(200) // let the turn start and go silent
+    const t0 = Date.now()
+    ac.abort()
+    const res = await p
+    assert.ok(Date.now() - t0 < 5_000, 'abort should end the turn promptly')
+    assert.equal(res.status, 499)
+    assert.equal(f.state.userMessages.length, 1)
+    await sleep(150) // stop_generation rides the WS back to the fake
+    assert.equal(f.state.stopGenerations.length, 1)
+    assert.equal(f.state.stopGenerations[0].thread_id, f.state.userMessages[0].threadId)
+  } finally {
+    ac.abort()
+    await f.close()
+  }
+})

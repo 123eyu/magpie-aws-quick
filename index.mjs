@@ -35,6 +35,9 @@
  *   sessionDir   where OAuth sessions are stored (default: platform config dir)
  *   oauthPort    fixed localhost callback port for OAuth login (default: free port)
  *   oauthTimeoutMs how long to wait for the browser login (default 600000)
+ *   headerWaitMs  streaming: send headers after this long even before first output (default 10000; 0 = wait for output)
+ *   idleTimeoutMs abort a turn with no Quick progress for this long (default 300000; 0 = off); keepalives don't count
+ *   showQuickTools surface Quick's own tool_start events as [Quick: name] reasoning lines (default true)
  *   log          function(line) for plugin diagnostics
  *
  * Models are Quick's agent modes, not raw model ids:

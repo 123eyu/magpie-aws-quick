@@ -155,6 +155,20 @@ magpie login aws-quick              # 按提示选择登录方式
 账号自己的 token，和桌面端用量组件的数字一致；重置时间按桌面端的算法取
 下个月 1 号。
 
+### 选项
+
+少数插件选项可以调请求行为（`magpie plugin options aws-quick '{…}'`）：
+
+- `headerWaitMs`（默认 `10000`）：流式请求在 Quick 给出首个输出**或**超过
+  该时长后返回响应头——Quick 跑自带工具时可能长时间静默，而网关对响应头
+  的等待是有上限的。`0` 表示和以前一样等到首个输出。
+- `idleTimeoutMs`（默认 `300000`）：一轮 Quick turn 超过该时长没有任何进展
+  （keepalive 不算）就中止，报 503 `timeout`；同时给 Quick 发它自己的
+  `stop_generation` 帧，避免服务端继续空跑。客户端中止同样处理。`0` 关闭。
+- `showQuickTools`（默认 `true`）：把 Quick 自带工具的 `tool_start` 以
+  `[Quick: <名称>]` 推理行的形式透出，长时间 agentic 轮次不再看起来像卡死；
+  `false` 隐藏。
+
 ## 已知限制
 
 - **工具调用是文本约定模拟**：Quick 的 agent 在服务端自带工具链（浏览器、本地文件、MCP 等），

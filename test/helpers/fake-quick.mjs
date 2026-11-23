@@ -114,6 +114,7 @@ export async function startFakeQuick({ script, session, connectError } = {}) {
     connections: 0,
     userMessages: [],   // decoded user_message payloads, in order
     sessionConnects: [],
+    stopGenerations: [], // decoded stop_generation payloads, in order
     pings: 0,
   }
   const sockets = new Set()
@@ -190,6 +191,10 @@ export async function startFakeQuick({ script, session, connectError } = {}) {
         if (t === 'ping') {
           state.pings++
           sendEs({ type: 'status', payload: { status: 'pong', timestamp: Date.now() } })
+          return
+        }
+        if (t === 'stop_generation') {
+          state.stopGenerations.push(inner.payload || {})
           return
         }
         if (t === 'user_message') {
