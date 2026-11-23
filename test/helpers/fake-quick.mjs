@@ -108,8 +108,10 @@ function wsEncode(payload, opcode = 2) {
  * @param {(payload:object, meta:{threadId:string}) => Array<object>|Promise<Array<object>>} opts.script
  *        maps a user_message payload → inner events to emit (may be async)
  * @param {object} [opts.session] overrides for the sncs-session fields the WS layer sees
+ * @param {boolean} [opts.staleStop=true] emit the stopped turn's terminal-event
+ *        tail after stop_generation (real Quick keeps flushing for ~0.3 s)
  */
-export async function startFakeQuick({ script, session, connectError } = {}) {
+export async function startFakeQuick({ script, session, connectError, staleStop = true } = {}) {
   const state = {
     connections: 0,
     userMessages: [],   // decoded user_message payloads, in order
@@ -195,12 +197,20 @@ export async function startFakeQuick({ script, session, connectError } = {}) {
         }
         if (t === 'stop_generation') {
           state.stopGenerations.push(inner.payload || {})
+          const stid = inner.payload?.thread_id || ''
+          if (stid && staleStop) {
+            // Real Quick keeps flushing the stopped turn's terminal events for
+            // a few hundred ms after stop_generation; the second one is spaced
+            // out so tests can observe events landing after the settle resolved.
+            setTimeout(() => sendEs({ type: 'text_complete', payload: { text: '', message_id: 'stopped' } }, stid), 30)
+            setTimeout(() => sendEs({ type: 'message_complete', payload: { text: '', message_id: 'stopped' } }, stid), 120)
+          }
           return
         }
         if (t === 'user_message') {
           const p = inner.payload || {}
           const threadId = p.thread_id || ''
-          state.userMessages.push({ threadId, payload: p })
+          state.userMessages.push({ threadId, payload: p, at: Date.now() })
           Promise.resolve(script ? script(p, { threadId }) : defaultScript(p)).then((events) => {
             const list = Array.isArray(events) ? events : []
             for (const ev of list) sendEs(ev, threadId || ev.thread_id)

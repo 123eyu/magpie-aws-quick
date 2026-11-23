@@ -869,3 +869,241 @@ test('client abort during silence ends the turn promptly and sends stop_generati
     await f.close()
   }
 })
+
+// ---------- native client-tool salvage ----------
+
+const fnTool = (name) => ({
+  type: 'function',
+  function: { name, description: `${name} tool`, parameters: { type: 'object', properties: { file_path: { type: 'string' }, content: { type: 'string' } } } },
+})
+
+/** Verified live shape: tool_start → tool_progress → tool_arguments → turn_usage → tool_result → rewrite step. */
+const nativeWriteSeq = () => [
+  { type: 'tool_start', payload: { tool_name: 'Write', tool_id: 'tw1', arguments: {} } },
+  { type: 'tool_progress', payload: { tool_id: 'tw1', input_delta: '{"file_path"' } },
+  { type: 'tool_arguments', payload: { tool_id: 'tw1', tool_name: 'Write', arguments: { file_path: 'pelican.html', content: '<html>pelican</html>' } } },
+  { type: 'turn_usage', payload: { input_tokens: 100, output_tokens: 50 } },
+  // everything below must be ignored once the salvage stop fires:
+  { type: 'tool_result', payload: { tool_id: 'tw1', tool_name: 'Write', error: 'Unknown tool: Write' } },
+  { type: 'text_delta', payload: { delta: 'rewritten <tool_call>{"name":"Write","arguments":{"file_path":"pelican.html","content":"<html>pelican</html>"}}</tool_call>' } },
+  { type: 'message_complete', payload: { text: 'rewritten' } },
+]
+
+test('native client call is salvaged as a tool_call; rewrite is cut and Quick is stopped (non-stream)', async () => {
+  const f = await startFakeQuick({ script: nativeWriteSeq })
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [{ role: 'user', content: 'write a file' }], tools: [fnTool('Write')] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'salvage-acct' },
+    })
+    assert.equal(res.status, 200)
+    const j = await res.json()
+    assert.equal(j.choices[0].finish_reason, 'tool_calls')
+    const msg = j.choices[0].message
+    assert.equal(msg.tool_calls.length, 1)
+    assert.equal(msg.tool_calls[0].function.name, 'Write')
+    assert.deepEqual(JSON.parse(msg.tool_calls[0].function.arguments), { file_path: 'pelican.html', content: '<html>pelican</html>' })
+    assert.ok(!msg.content.includes('rewritten'), 'rewrite text must not reach the client')
+    assert.ok(!msg.reasoning_content?.includes('[Quick: Write]'), 'client-tool tool_start note is suppressed')
+    await sleep(150)
+    assert.equal(f.state.stopGenerations.length, 1)
+    assert.equal(f.state.stopGenerations[0].thread_id, f.state.userMessages.at(-1).threadId)
+  } finally {
+    await f.close()
+  }
+})
+
+test('native client call salvage works over streaming too', async () => {
+  const f = await startFakeQuick({ script: nativeWriteSeq })
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'fast', stream: true, messages: [{ role: 'user', content: 'write a file' }], tools: [fnTool('Write')] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'salvage-stream-acct' },
+    })
+    assert.equal(res.status, 200)
+    const events = await readSse(res)
+    const callChunks = events.filter((e) => e.choices?.[0]?.delta?.tool_calls)
+    assert.equal(callChunks.length, 1)
+    const tc = callChunks[0].choices[0].delta.tool_calls[0]
+    assert.equal(tc.function.name, 'Write')
+    assert.deepEqual(JSON.parse(tc.function.arguments), { file_path: 'pelican.html', content: '<html>pelican</html>' })
+    const allText = events.map((e) => e.choices?.[0]?.delta?.content ?? e.choices?.[0]?.delta?.reasoning_content ?? '').join('')
+    assert.ok(!allText.includes('rewritten'), 'rewrite text must not reach the stream')
+    assert.ok(!allText.includes('[Quick: Write]'))
+    assert.equal(events.at(-2).choices?.[0]?.finish_reason ?? events.at(-1).choices?.[0]?.finish_reason, 'tool_calls')
+    await sleep(150)
+    assert.equal(f.state.stopGenerations.length, 1)
+    assert.equal(f.state.stopGenerations[0].thread_id, f.state.userMessages.at(-1).threadId)
+  } finally {
+    await f.close()
+  }
+})
+
+test('two native client calls in one step both become tool_calls', async () => {
+  const f = await startFakeQuick({
+    script: () => [
+      { type: 'tool_arguments', payload: { tool_id: 'a1', tool_name: 'Write', arguments: { file_path: 'a.txt', content: 'A' } } },
+      { type: 'tool_arguments', payload: { tool_id: 'a2', tool_name: 'Read', arguments: { file_path: 'b.txt' } } },
+      { type: 'turn_usage', payload: { input_tokens: 1, output_tokens: 2 } },
+      { type: 'text_delta', payload: { delta: 'must not appear' } },
+      { type: 'message_complete', payload: { text: 'must not appear' } },
+    ],
+  })
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [{ role: 'user', content: 'do two things' }], tools: [fnTool('Write'), fnTool('Read')] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'salvage-two-acct' },
+    })
+    const j = await res.json()
+    assert.equal(j.choices[0].finish_reason, 'tool_calls')
+    const calls = j.choices[0].message.tool_calls
+    assert.equal(calls.length, 2)
+    assert.equal(calls[0].function.name, 'Write')
+    assert.deepEqual(JSON.parse(calls[0].function.arguments), { file_path: 'a.txt', content: 'A' })
+    assert.equal(calls[1].function.name, 'Read')
+    assert.deepEqual(JSON.parse(calls[1].function.arguments), { file_path: 'b.txt' })
+    assert.ok(!j.choices[0].message.content.includes('must not appear'))
+    await sleep(150)
+    assert.equal(f.state.stopGenerations.length, 1)
+  } finally {
+    await f.close()
+  }
+})
+
+test('native Quick tool (generate_image) is not salvaged and keeps its [Quick:] note', async () => {
+  const f = await startFakeQuick({
+    script: () => [
+      { type: 'tool_start', payload: { tool_name: 'generate_image', tool_id: 'g1', arguments: {} } },
+      { type: 'tool_arguments', payload: { tool_id: 'g1', tool_name: 'generate_image', arguments: { prompt: 'x' } } },
+      { type: 'text_delta', payload: { delta: 'here is your image' } },
+      { type: 'turn_usage', payload: { input_tokens: 1, output_tokens: 2 } },
+      { type: 'message_complete', payload: { text: 'here is your image' } },
+    ],
+  })
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [{ role: 'user', content: 'make an image' }], tools: [fnTool('Write')] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'salvage-native-acct' },
+    })
+    const j = await res.json()
+    assert.equal(j.choices[0].finish_reason, 'stop')
+    assert.equal(j.choices[0].message.tool_calls, undefined)
+    assert.match(j.choices[0].message.reasoning_content ?? '', /\[Quick: generate_image\]/)
+    assert.ok(j.choices[0].message.content.includes('here is your image'))
+    await sleep(150)
+    assert.equal(f.state.stopGenerations.length, 0, 'no salvage → no stop_generation')
+  } finally {
+    await f.close()
+  }
+})
+
+test('without client tools a native Write call is not converted', async () => {
+  const f = await startFakeQuick({ script: nativeWriteSeq })
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [{ role: 'user', content: 'write a file' }] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'salvage-notools-acct' },
+    })
+    const j = await res.json()
+    assert.equal(j.choices[0].finish_reason, 'stop')
+    assert.equal(j.choices[0].message.tool_calls, undefined)
+    await sleep(150)
+    assert.equal(f.state.stopGenerations.length, 0)
+  } finally {
+    await f.close()
+  }
+})
+
+test('client-tool match is case-insensitive but emits the canonical spelling', async () => {
+  const f = await startFakeQuick({
+    script: () => [
+      { type: 'tool_arguments', payload: { tool_id: 'x1', tool_name: 'write', arguments: { file_path: 'a.txt', content: 'B' } } },
+      { type: 'turn_usage', payload: { input_tokens: 1, output_tokens: 2 } },
+    ],
+  })
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [{ role: 'user', content: 'write' }], tools: [fnTool('Write')] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'salvage-case-acct' },
+    })
+    const j = await res.json()
+    assert.equal(j.choices[0].finish_reason, 'tool_calls')
+    assert.equal(j.choices[0].message.tool_calls[0].function.name, 'Write')
+  } finally {
+    await f.close()
+  }
+})
+
+// ---------- post-salvage history repair ----------
+
+test('after a native salvage, the next reused turn restates the call once, before the tool result', async () => {
+  // Turn 1 natively calls Write (salvage → stop_generation). Turns 2+ answer
+  // slowly so the fake's stale terminal tail lands while turn 2 is silent —
+  // the socket settle + terminal guard must carry it through.
+  let calls = 0
+  const f = await startFakeQuick({
+    script: async (p) => {
+      calls++
+      if (calls === 1) return nativeWriteSeq()
+      await sleep(200)
+      return defaultScript(p)
+    },
+  })
+  const mgr = fakeMgr(f) // one outpost → one QuickSocket across all turns
+  const sessions = createSessionStore()
+  const tools = [fnTool('Write')]
+  const opts = { identity: 'salvage-hist-acct' }
+  const convo1 = [{ role: 'user', content: 'write a file' }]
+  try {
+    const r1 = await handleChatCompletions({ body: { model: 'fast', messages: convo1, tools }, outpostMgr: mgr, sessions, options: opts })
+    assert.equal(r1.status, 200)
+    const j1 = await r1.json()
+    assert.equal(j1.choices[0].finish_reason, 'tool_calls')
+    const call = j1.choices[0].message.tool_calls[0]
+    assert.equal(call.function.name, 'Write')
+
+    // Turn 2: client echoes the assistant tool_call + tool result + new user msg.
+    const convo2 = [
+      ...convo1,
+      { role: 'assistant', content: j1.choices[0].message.content, tool_calls: j1.choices[0].message.tool_calls },
+      { role: 'tool', tool_call_id: call.id, content: 'File created successfully at: pelican.html' },
+      { role: 'user', content: 'is it done?' },
+    ]
+    const r2 = await handleChatCompletions({ body: { model: 'fast', messages: convo2, tools }, outpostMgr: mgr, sessions, options: opts })
+    assert.equal(r2.status, 200)
+    const j2 = await r2.json()
+    const up2 = f.state.userMessages.at(-1)
+    assert.equal(up2.threadId, f.state.userMessages.at(-2).threadId, 'follow-up must reuse the salvaged thread')
+    const txt = up2.payload.text
+    const li = txt.indexOf('interrupted after you called these tools')
+    const ci = txt.indexOf('[called tool Write(')
+    const ri = txt.indexOf(`[tool_result ${call.id}`) // reminder preamble also mentions [tool_result …]
+    assert.ok(li !== -1, 'lead-in missing from reused turn')
+    assert.ok(ci > li, 'rendered call must follow the lead-in')
+    assert.ok(ri > ci, 'tool result must come after the re-stated call')
+    assert.ok(txt.includes('"file_path":"pelican.html"'), 'native args must be rendered')
+    assert.ok(txt.includes('File created successfully'), 'tool result must still be delivered')
+
+    // Turn 3: the flag was consumed — nothing is re-stated.
+    const convo3 = [
+      ...convo2,
+      { role: 'assistant', content: j2.choices[0].message.content },
+      { role: 'user', content: 'anything else?' },
+    ]
+    const r3 = await handleChatCompletions({ body: { model: 'fast', messages: convo3, tools }, outpostMgr: mgr, sessions, options: opts })
+    assert.equal(r3.status, 200)
+    await r3.json()
+    const up3 = f.state.userMessages.at(-1)
+    assert.equal(up3.threadId, up2.threadId)
+    assert.ok(!up3.payload.text.includes('interrupted after you called these tools'), 'prefix must not repeat on the third turn')
+    assert.ok(!up3.payload.text.includes('[called tool Write('))
+  } finally {
+    await f.close()
+  }
+})

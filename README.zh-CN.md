@@ -179,7 +179,9 @@ magpie login aws-quick              # 按提示选择登录方式
   复用 thread 的后续轮次只带一段简短提醒：消息里的内容都会留在 Quick 的
   thread 历史里、计入上下文。可靠性取决于模型遵守约定——已实测
   `tool_choice:'required'` 下 smart/advanced 均能稳定产出；模型偶尔会先用
-  自带工具（如联网搜索）直接作答，此时表现为普通文本回复。
+  自带工具（如联网搜索）直接作答，此时表现为普通文本回复。若模型改用
+  Quick 自己的原生工具通道调用了客户端声明的工具，插件会识别该调用并按
+  普通 `tool_calls` 返回，并在 Quick 把它重写成文本之前中止本轮。
   Quick 自带工具的执行结果不会映射为 OpenAI `tool_calls`（那是它内部过程）。
 - **图片：小图内联，大图走云端上传**：能放进消息帧的内联图片（`data:` URL、
   Anthropic base64 块、工具结果里的图片）仍作为 `user_message.attachments`

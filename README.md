@@ -215,7 +215,10 @@ A few plugin options tune request handling (`magpie plugin options aws-quick '{â
   model honoring the convention â€” verified stable under
   `tool_choice:'required'` for smart/advanced; occasionally the model answers
   directly with its own tools (e.g. web search) instead, which shows up as a
-  plain-text reply. Quick's built-in tool results are never mapped to OpenAI
+  plain-text reply. If the model instead invokes a client-declared tool
+  through Quick's own native tool channel, the plugin recognizes the call and
+  emits it as a normal `tool_calls` item, stopping the turn before Quick can
+  rewrite it as text. Quick's built-in tool results are never mapped to OpenAI
   `tool_calls` (that's its internal process).
 - **Images: small ones inline, larger ones uploaded.** Inline images (`data:`
   URLs, Anthropic base64 blocks, images inside tool results) that fit the
