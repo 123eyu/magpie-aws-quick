@@ -6,6 +6,10 @@
 这样经 magpie 路由的 Claude Code、Codex、Gemini CLI、OpenCode 等 Agent 都能用上 Quick 背后的模型
 （以 `magpie models | grep aws-quick` 列出的为准）。
 
+> **推荐客户端：Claude Code 或 pi（pi-agent）。** 插件主要针对这两个客户端开发。在 Claude Code 里，
+> 工具调用、跨轮复用 Quick 会话、中断和大文件写入都做过端到端测试；pi 发的会话亲和头会用来持续复用同一个
+> Quick 会话。其他客户端也能用，只是测得少一些。
+
 > ⚠️ 仅供个人使用自己的账号。这是驱动 Amazon Quick 桌面客户端的内部双向 WebSocket 协议
 > （非公开 API），很可能违反 AWS 服务条款，账号存在被限制/封禁的风险，后果自负。
 
