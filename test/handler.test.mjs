@@ -1136,3 +1136,26 @@ test('custom_prompt tells Quick not to emit Quick-app UI markup, but not for cod
     await f.close()
   }
 })
+
+test('direct backend with a device id sends it as outpostId on the socket and the upload', async () => {
+  const f = await startFakeQuick({})
+  const calls = []
+  const dev = '0f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a'
+  try {
+    const mgr = directMgr(f)
+    const base = await mgr.ensure()
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [bigImageMsg()] },
+      outpostMgr: { ensure: async () => ({ ...base, outpostId: async () => dev }) },
+      options: { identity: 'dev-acct', fetchImpl: uploadFetch(calls), log: () => {} },
+    })
+    assert.equal(res.status, 200)
+    await res.json()
+    const sc = f.state.sessionConnects.at(-1)
+    assert.equal(sc.outpostId, dev)
+    const evt = JSON.parse(calls.find((c) => c.url.includes('qbs-event')).init.body)
+    assert.equal(evt.eventBody.invokeAgent.outpostId, dev)
+  } finally {
+    await f.close()
+  }
+})

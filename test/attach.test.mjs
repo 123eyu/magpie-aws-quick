@@ -167,3 +167,10 @@ test('uploadImage derives the base URL from tenant_url or ws_host', async () => 
     assert.ok(seen[0].startsWith(expected), `${seen[0]} !~ ${expected}`)
   }
 })
+
+test('uploadImage delivers with the caller-supplied device id as outpostId', async () => {
+  const { fn, calls } = stubFetch(happyRoutes())
+  await upload(fn, { outpostId: '11111111-2222-4333-8444-555555555555' })
+  const ia = JSON.parse(calls.find((c) => c.url.includes('qbs-event')).init.body).eventBody.invokeAgent
+  assert.equal(ia.outpostId, '11111111-2222-4333-8444-555555555555')
+})

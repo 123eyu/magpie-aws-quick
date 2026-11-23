@@ -45,6 +45,11 @@ Python 后端（`quickwork-agent`，打包在 `resources/agent.zip` 里），以
 5. **会话复用（默认开启）**：三级续接判定——见下文
    [会话复用](#会话复用thread-reuse)。
 
+设备 ID：官方桌面端连接时总会把 profile 里的 `device_id` 作为 `outpostId` 发出去，所以直连会话也发一个按账号固定的 ID，不再发空值。
+凭据管理器登录直接用桌面端 profile 里的 `device_id`（只读）；OAuth 账号在登录时生成一个 UUID，存在账号记录里，刷新令牌和重新登录都保持不变。
+大图上传投递时也用同一个 ID。不同账号不共用 ID，同一账号的 ID 不会更换。设 `stableDeviceId: false` 可退回空值。
+本地 outpost 模式使用 Quick 自带 agent 报告的 ID；agent 会继承环境变量 `QUICKWORK_BASE` / `QUICKWORK_ROOT`。
+
 ### 会话复用（thread reuse）
 
 Quick 在服务端按 `thread_id` 保存会话历史，而 OpenAI 客户端每次请求都重发
@@ -168,6 +173,8 @@ magpie login aws-quick              # 按提示选择登录方式
 - `showQuickTools`（默认 `true`）：把 Quick 自带工具的 `tool_start` 以
   `[Quick: <名称>]` 推理行的形式透出，长时间 agentic 轮次不再看起来像卡死；
   `false` 隐藏。
+- `stableDeviceId`（默认 `true`）：直连会话把按账号固定的设备 ID 作为
+  `outpostId` 发送（见上文"设备 ID"）；`false` 改发空值。
 
 ## 已知限制
 
@@ -201,8 +208,8 @@ magpie login aws-quick              # 按提示选择登录方式
   截断时回复里会带 `> [quick] …已截断` 提示。
 - **OAuth 登录仅限 consumer/social 通道**：重放的是桌面端 `quick.aws.com/sn`
   的 `social` provider 流程。走企业 IdP 的租户如果 issuer 不是 Amazon 社交 IdP
-  可能无法完成——这种情况请改用本地凭据方式。OAuth 路径以空 `outpostId` 运行
-  （服务端接受），将来若有依赖真实设备 id 的服务端能力不适用于此路径。
+  可能无法完成——这种情况请改用本地凭据方式。OAuth 路径会发送固定的生成设备 ID，
+  但不运行本地 agent，需要已连接设备的服务端能力（本机文件、应用）不适用于此路径。
 
 ## 安全与凭据
 

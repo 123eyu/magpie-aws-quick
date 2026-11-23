@@ -230,9 +230,9 @@ OpenAI `tool_calls`。
 3. `POST {base}qbs-event`，请求体 `{"eventType":"invokeAgent","eventBody":
    {"invokeAgent":{"path":"files/upload/<threadId>","queryParams":
    {"_method":"POST"},"body":{"attachmentId":…},"workingSessionId":<uuid>,
-   "outpostId":<uuid>}}}`。`outpostId` 必须是非空随机 UUID（传空 → HTTP
-   500 校验错误），但**不需要**和 WebSocket 的 outpostId 一致——socket
-   继续用自己的（空）id；`workingSessionId` 可以是任意新 UUID。响应里
+   "outpostId":<uuid>}}}`。`outpostId` 必须是非空 UUID（传空 → HTTP
+   500 校验错误），但**不需要**和 WebSocket 的 outpostId 一致（插件传的是
+   账号的设备 ID，取不到时才用随机值）；`workingSessionId` 可以是任意新 UUID。响应里
    `eventResponse.invokeAgentResponse` 可能是对象或 JSON 字符串；有
    `.api_response` 就再解一层，`status`（存在时）须为 2xx，`.body` 也
    可能是对象或 JSON 字符串——文件路径取 `body.path ||

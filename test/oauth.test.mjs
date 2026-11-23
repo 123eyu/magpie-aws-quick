@@ -6,6 +6,7 @@ import path from 'node:path'
 import {
   createSessionStore, runOAuthLogin, startOAuthLogin, refreshSession, buildSession,
   keyForSession, createDirectBackend, OAuthError, rememberDiscovery, takeDiscovery,
+  oauthDeviceId, isDeviceId,
 } from '../lib/oauth.mjs'
 
 const tmp = () => mkdtempSync(path.join(tmpdir(), 'oauth-test-'))
@@ -352,4 +353,47 @@ test('keyForSession is stable per account', () => {
   assert.equal(a, b)
   assert.notEqual(a, c)
   assert.ok(a.startsWith('oauth-'))
+})
+
+test('oauthDeviceId: generated once per account, persisted, and stable across backends and refresh', async () => {
+  const dir = tmp()
+  try {
+    const store = createSessionStore({ dir })
+    const mk = (key) => buildSession({
+      tenant_url: 'https://t/x',
+      tokens: { access_token: 'a', refresh_token: 'rt-1', id_token: 'i', expires_in: 10 }, // ~expired
+      user_info: { user_arn: `arn:${key}` }, discovery: { idc_region: 'us-east-1' },
+      client_id: 'c', client_secret: 's',
+    })
+    store.set('k1', mk('k1'))
+    store.set('k2', mk('k2'))
+    const backendFor = (key) => createDirectBackend({
+      load: () => store.get(key),
+      persist: (s) => store.set(key, s),
+      deviceId: oauthDeviceId(store, key),
+      fetchImpl: mockFetch(),
+    })
+    const b1 = backendFor('k1')
+    await b1.ensure()
+    const id1 = await b1.outpostId()
+    assert.ok(isDeviceId(id1), id1)
+    assert.equal(store.get('k1').device_id, id1, 'persisted on the account record')
+    assert.equal(await b1.outpostId(), id1)
+    // a token refresh rewrites the record; the device id must survive it
+    await b1.session()
+    assert.equal(store.get('k1').tokens.refresh_token, 'rt-2')
+    assert.equal(store.get('k1').device_id, id1)
+    // a fresh backend (plugin restart) reads the same id back
+    const again = backendFor('k1')
+    await again.ensure()
+    assert.equal(await again.outpostId(), id1)
+    // another account gets its own
+    const b2 = backendFor('k2')
+    await b2.ensure()
+    const id2 = await b2.outpostId()
+    assert.ok(isDeviceId(id2))
+    assert.notEqual(id2, id1)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

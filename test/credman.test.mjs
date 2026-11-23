@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { sessionFromBlob, mergeForCredWrite, regionFromTenant } from '../lib/credman.mjs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { sessionFromBlob, mergeForCredWrite, regionFromTenant, profileDeviceId, credManDeviceId } from '../lib/credman.mjs'
 import { createDirectBackend } from '../lib/oauth.mjs'
 
 const blob = {
@@ -86,4 +89,34 @@ test('credman backend refreshes when access token expired', async () => {
   assert.equal(got.id_token, 'idt-new') // id_token preferred after refresh
   assert.equal(persisted.length, 1)
   assert.equal(persisted[0].tokens.refresh_token, 'rt-2')
+})
+
+test('credman device id: the desktop profile\'s own device_id, else one stable generated id per target', () => {
+  const home = mkdtempSync(path.join(tmpdir(), 'credman-dev-'))
+  const store = mkdtempSync(path.join(tmpdir(), 'credman-store-'))
+  try {
+    const root = path.join(home, '.quickwork')
+    mkdirSync(path.join(root, 'profiles', 'social-abc123'), { recursive: true })
+    writeFileSync(path.join(root, 'profiles.json'), JSON.stringify({
+      version: 1,
+      entries: [{ id: 'social-abc123', data_path: 'profiles/social-abc123' }],
+    }))
+    const real = '90b204fe-c17f-4c77-87c9-1626e429ddb4'
+    writeFileSync(path.join(root, 'profiles', 'social-abc123', 'device_id'), `${real}\n`)
+    assert.equal(profileDeviceId('quickwork-social-social-abc123', { home }), real)
+    assert.equal(profileDeviceId('quickwork-social-other', { home }), '')
+
+    const resolve = credManDeviceId({ dir: store, home })
+    assert.equal(resolve({ _credTarget: 'quickwork-social-social-abc123' }), real)
+    // no matching profile: generated once, kept in the plugin's store, not in ~/.quickwork
+    const gen = resolve({ _credTarget: 'quickwork-social-other' })
+    assert.match(gen, /^[0-9a-f-]{36}$/)
+    assert.equal(resolve({ _credTarget: 'quickwork-social-other' }), gen)
+    assert.equal(credManDeviceId({ dir: store, home })({ _credTarget: 'quickwork-social-other' }), gen)
+    assert.ok(readFileSync(path.join(store, 'credman-devices.json'), 'utf8').includes(gen))
+    assert.equal(readFileSync(path.join(root, 'profiles', 'social-abc123', 'device_id'), 'utf8').trim(), real, 'desktop file untouched')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+    rmSync(store, { recursive: true, force: true })
+  }
 })

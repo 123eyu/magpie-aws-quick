@@ -245,9 +245,10 @@ go through Quick's own cloud attachment flow — no desktop/device needed:
 3. `POST {base}qbs-event` with `{"eventType":"invokeAgent","eventBody":
    {"invokeAgent":{"path":"files/upload/<threadId>","queryParams":
    {"_method":"POST"},"body":{"attachmentId":…},"workingSessionId":<uuid>,
-   "outpostId":<uuid>}}}`. `outpostId` MUST be a non-empty random UUID
+   "outpostId":<uuid>}}}`. `outpostId` MUST be a non-empty UUID
    (empty → HTTP 500 validation error) but does NOT need to match the
-   WebSocket's outpostId — the socket keeps its own (empty) id;
+   WebSocket's outpostId (the plugin passes the account's device id, random
+   only as a fallback);
    `workingSessionId` can be any fresh UUID. The response's
    `eventResponse.invokeAgentResponse` may be an object or a JSON string;
    unwrap `.api_response` if present, check `status` (if present) is 2xx,

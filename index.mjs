@@ -38,21 +38,23 @@
  *   headerWaitMs  streaming: send headers after this long even before first output (default 10000; 0 = wait for output)
  *   idleTimeoutMs abort a turn with no Quick progress for this long (default 300000; 0 = off); keepalives don't count
  *   showQuickTools surface Quick's own tool_start events as [Quick: name] reasoning lines (default true)
+ *   stableDeviceId direct sessions send a stable per-account device id as outpostId, like the desktop (default true; false = empty)
  *   log          function(line) for plugin diagnostics
  *
  * Models are Quick's agent modes, not raw model ids:
  *   fast / balanced / smart / advanced  (X-Magpie-Effort maps to thinking_effort)
  */
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { createOutpostManager } from './lib/outpost.mjs'
 import { handleChatCompletions, handleModels } from './lib/handler.mjs'
 import { createSessionStore, SESSION_DEFAULTS } from './lib/sessions.mjs'
 import { MODELS } from './lib/translate.mjs'
 import {
   createSessionStore as createOAuthStore, createDirectBackend,
-  startOAuthLogin, takeDiscovery, keyForSession, OAuthError, defaultStoreDir,
+  startOAuthLogin, takeDiscovery, keyForSession, OAuthError, defaultStoreDir, oauthDeviceId, isDeviceId,
 } from './lib/oauth.mjs'
-import { createCredManBackend, loadCredManSession } from './lib/credman.mjs'
+import { createCredManBackend, loadCredManSession, credManDeviceId } from './lib/credman.mjs'
 import { quickUsage } from './lib/usage.mjs'
 
 const PROVIDER = 'aws-quick'
@@ -172,6 +174,9 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
   // over the stored token directly (no outpost; OAuth rotates its refresh
   // token in the session file, Credential Manager writes refreshed tokens
   // back to the app's own credential); otherwise the spawned local outpost.
+  // Direct sessions send a stable per-account device id as outpostId, like
+  // the desktop does (stableDeviceId:false restores the empty value).
+  const stableDeviceId = opts.stableDeviceId !== false
   function backendFor(auth) {
     const key = auth?.type === 'api' ? auth.key : undefined
     if (!key) return null
@@ -180,13 +185,18 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
       const backend = createDirectBackend({
         load: () => store.get(key),
         persist: (s) => store.set(key, s),
+        deviceId: stableDeviceId ? oauthDeviceId(store, key) : undefined,
         fetchImpl: opts.fetchImpl,
         log: opts.log,
       })
       return { key, apiKey: 'aws-quick-oauth', mgr: { ensure: () => backend.ensure() } }
     }
     if (auth?.metadata?.mode === 'local-credman') {
-      const backend = createCredManBackend({ fetchImpl: opts.fetchImpl, log: opts.log })
+      const backend = createCredManBackend({
+        fetchImpl: opts.fetchImpl,
+        log: opts.log,
+        deviceId: stableDeviceId ? credManDeviceId({ dir: opts.sessionDir || undefined }) : undefined,
+      })
       return { key, apiKey: 'aws-quick-local', mgr: { ensure: () => backend.ensure() } }
     }
     return { key, apiKey: 'aws-quick-local', mgr: outpostMgr }
@@ -196,7 +206,9 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
   function saveOAuthSession(sess) {
     const store = createOAuthStore({ dir: opts.sessionDir })
     const key = keyForSession(sess)
-    store.set(key, sess)
+    // Re-login to the same account keeps its device id; a new account gets one.
+    const prev = store.get(key)?.device_id
+    store.set(key, { ...sess, device_id: isDeviceId(prev) ? prev : sess.device_id || randomUUID() })
     const who = sess.email || sess.display_name || sess.aws_account_id || ''
     return { type: 'success', key, metadata: { mode: 'oauth', account: who } }
   }
