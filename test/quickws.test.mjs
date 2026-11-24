@@ -34,6 +34,7 @@ test('stop() settle: next turn waits out the stale tail; stray terminals do not 
     },
   })
   const socket = socketFor(f)
+  await socket.connect() // the timeline below must not depend on connect latency
   const tid = crypto.randomUUID()
   const ac = new AbortController()
   const t1 = (async () => {
@@ -75,6 +76,7 @@ test('stop() settle falls back to the 3s timeout when no terminal arrives', asyn
     },
   })
   const socket = socketFor(f)
+  await socket.connect() // the timeline below must not depend on connect latency
   const tid = crypto.randomUUID()
   const ac = new AbortController()
   const t1 = (async () => {
