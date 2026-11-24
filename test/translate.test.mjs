@@ -96,7 +96,7 @@ test('capText truncates by bytes with marker and respects budget', () => {
   assert.ok(cjk.includes('truncated'))
 })
 
-test('renderTranscript drops oldest history first, keeps final user turn', () => {
+test('renderTranscript keeps the opening user message, drops the middle, keeps final user turn', () => {
   const messages = [
     { role: 'user', content: 'OLD-QUESTION-' + 'a'.repeat(3000) },
     { role: 'assistant', content: 'OLD-ANSWER-' + 'b'.repeat(3000) },
@@ -108,9 +108,9 @@ test('renderTranscript drops oldest history first, keeps final user turn', () =>
   const out = renderTranscript(messages, 'sys', { maxBytes: 8000, stats })
   assert.ok(stats.truncated)
   assert.ok(out.endsWith('FINAL-QUESTION')) // current turn never dropped
-  assert.ok(!out.includes('OLD-QUESTION')) // oldest dropped
-  assert.ok(out.includes('RECENT-QUESTION') || out.includes('RECENT-ANSWER') || out.includes('recent'))
-  assert.ok(out.includes('earlier message(s) omitted'))
+  assert.ok(out.includes('OLD-QUESTION')) // opening message (task / compaction summary) is pinned
+  assert.ok(!out.includes('OLD-ANSWER')) // the middle goes first
+  assert.ok(out.indexOf('OLD-QUESTION') < out.indexOf('earlier message(s) omitted'))
   assert.ok(byteLen(out) <= 8000)
 })
 
@@ -121,7 +121,8 @@ test('renderTranscript caps oversized system prompt and user turn', () => {
   assert.ok(stats.truncated)
   assert.ok(out.includes('[truncated]'))
   assert.ok(byteLen(out) <= UPSTREAM_TEXT_LIMIT)
-  assert.ok(out.endsWith('[truncated]')) // user turn itself was capped
+  assert.ok(out.includes('[middle truncated]')) // user turn cut in the middle…
+  assert.ok(out.endsWith('u')) // …so its end survives
 })
 
 test('renderDelta caps oversized tool results per block', () => {
@@ -273,4 +274,28 @@ test('pickImages upload caps: count, per-image size and total bytes', () => {
   const r4 = pickImages([{ role: 'user', content: [imgPart(two), imgPart(two)] }], 1024, { upload: true })
   assert.equal(r4.toUpload.length, 1)
   assert.equal(r4.skipped, 1)
+})
+
+test('compaction summary survives a tight budget; stale file reminders in history are squeezed', () => {
+  const summary = 'SUMMARY-START This session is being continued. Server IP 10.1.2.3. ' + 'x'.repeat(6000) + ' SUMMARY-END'
+  const reminder = '<system-reminder>FILE-HEAD ' + 'f'.repeat(30 * 1024) + ' FILE-TAIL</system-reminder>'
+  const messages = [
+    { role: 'user', content: summary },
+    { role: 'assistant', content: 'ok' },
+    { role: 'user', content: 'please look ' + reminder },
+    { role: 'assistant', content: 'MIDDLE-ANSWER ' + 'm'.repeat(20 * 1024) },
+    { role: 'user', content: 'NOW-DO-THIS' },
+  ]
+  const out = renderTranscript(messages, '', { maxBytes: 20 * 1024 })
+  assert.ok(byteLen(out) <= 20 * 1024)
+  assert.ok(out.includes('SUMMARY-START') && out.includes('SUMMARY-END'), 'pinned summary kept whole when it fits')
+  assert.ok(out.endsWith('NOW-DO-THIS'))
+  assert.ok(!out.includes('f'.repeat(4096)), 'file reminder squeezed, not 30 KB')
+})
+
+test('renderDelta gives the current turn head and tail, not just the head', () => {
+  const big = 'TASK-HEAD ' + 'b'.repeat(40 * 1024) + ' TASK-TAIL'
+  const out = renderDelta([{ role: 'user', content: big }], { maxBytes: 60 * 1024 })
+  assert.ok(out.includes('TASK-HEAD') && out.includes('TASK-TAIL'))
+  assert.ok(byteLen(out) <= 60 * 1024)
 })
