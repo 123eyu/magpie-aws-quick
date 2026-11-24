@@ -98,3 +98,30 @@ test('stop() settle falls back to the 3s timeout when no terminal arrives', asyn
   await socket.close()
   await f.close()
 })
+
+test('status events carrying only payload.thread_id reach their own thread, not every waiter', async () => {
+  const f = await startFakeQuick({
+    script: async (p, { threadId }) => {
+      if (p.text === 'A') {
+        await sleep(30)
+        // runs_updated-style: no top-level thread_id, id inside the payload
+        return [{ type: 'runs_updated', thread_id: null, payload: { thread_id: threadId } }, ...defaultScript(p)]
+      }
+      await sleep(150) // B is still waiting while A's status event arrives
+      return defaultScript(p)
+    },
+  })
+  const socket = socketFor(f)
+  const seen = { A: [], B: [] }
+  const run = async (label) => {
+    for await (const e of socket.turn(crypto.randomUUID(), { text: label, agent_mode: 'fast' })) seen[label].push(e.type)
+  }
+  try {
+    await Promise.all([run('A'), run('B')])
+    assert.ok(seen.A.includes('runs_updated'), 'A gets its own status event')
+    assert.ok(!seen.B.includes('runs_updated'), 'B must not get A\'s status event')
+  } finally {
+    socket.close?.()
+    await f.close()
+  }
+})
