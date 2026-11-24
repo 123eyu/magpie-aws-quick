@@ -1,7 +1,7 @@
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { startFakeQuick, defaultScript } from './helpers/fake-quick.mjs'
-import { PLAIN_TEXT_NOTE, TOOLS_STILL_APPLY, handleChatCompletions, handleModels } from '../lib/handler.mjs'
+import { PLAIN_TEXT_NOTE, TOOLS_STILL_APPLY, INVALID_CALL_TOOL, handleChatCompletions, handleModels } from '../lib/handler.mjs'
 import { createSessionStore } from '../lib/sessions.mjs'
 import { byteLen } from '../lib/translate.mjs'
 import { OutpostError } from '../lib/outpost.mjs'
@@ -1186,6 +1186,56 @@ test('with client tools, custom_prompt keeps the model on its tools after the fo
     const cp = f.state.userMessages.at(-1).payload.custom_prompt
     assert.ok(cp.includes(PLAIN_TEXT_NOTE))
     assert.ok(cp.indexOf(TOOLS_STILL_APPLY) < cp.indexOf(PLAIN_TEXT_NOTE), "tool nudge comes before the formatting note")
+  } finally {
+    await f.close()
+  }
+})
+
+test('<sources> citations are stripped; a broken <tool_call> is reported and restated on the next reused turn', async () => {
+  let calls = 0
+  const f = await startFakeQuick({
+    script: async (p) => {
+      calls++
+      if (calls === 1) {
+        return [
+          { type: 'text_delta', payload: { delta: 'Done.\n<sources> [x](mem://d5e9) </sou' } },
+          { type: 'text_delta', payload: { delta: 'rces>\nNext. <tool_call>{"name":"Bash","arguments":{"command":"echo</tool_call>' } },
+          { type: 'message_complete', payload: { text: '' } },
+        ]
+      }
+      return defaultScript(p)
+    },
+  })
+  const mgr = fakeMgr(f)
+  const sessions = createSessionStore()
+  const tools = [fnTool('Bash')]
+  const opts = { identity: 'dropped-call-acct' }
+  const convo1 = [{ role: 'user', content: 'run it' }]
+  try {
+    const r1 = await handleChatCompletions({ body: { model: 'fast', messages: convo1, tools }, outpostMgr: mgr, sessions, options: opts })
+    const j1 = await r1.json()
+    const content = j1.choices[0].message.content
+    assert.ok(!content.includes('<sources>') && !content.includes('mem://'), content)
+    assert.match(content, /Done\./)
+    // the broken call becomes a placeholder call so the client's loop keeps going
+    assert.equal(j1.choices[0].finish_reason, 'tool_calls')
+    const ph = j1.choices[0].message.tool_calls
+    assert.equal(ph.length, 1)
+    assert.equal(ph[0].function.name, INVALID_CALL_TOOL)
+    assert.deepEqual(JSON.parse(ph[0].function.arguments), { tool: 'Bash', reason: 'invalid' })
+
+    // client answers with its "no such tool" error, as Claude Code does
+    const convo2 = [
+      ...convo1,
+      { role: 'assistant', content, tool_calls: ph },
+      { role: 'tool', tool_call_id: ph[0].id, content: `Error: No such tool available: ${INVALID_CALL_TOOL}` },
+    ]
+    const r2 = await handleChatCompletions({ body: { model: 'fast', messages: convo2, tools }, outpostMgr: mgr, sessions, options: opts })
+    await r2.json()
+    const up2 = f.state.userMessages.at(-1)
+    assert.equal(up2.threadId, f.state.userMessages.at(-2).threadId, 'reused thread')
+    assert.match(up2.payload.text, /previous <tool_call> for Bash was not valid JSON, so the client never ran it/)
+    assert.ok(up2.payload.text.indexOf('[Note:') < up2.payload.text.indexOf('No such tool available'), 'note precedes the placeholder error')
   } finally {
     await f.close()
   }
