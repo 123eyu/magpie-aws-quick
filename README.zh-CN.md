@@ -75,10 +75,15 @@ Quick 在服务端按 `thread_id` 保存会话历史，而 OpenAI 客户端每�
 
 层级顺序很重要：内容匹配命中永远优先，会话键只在前两级都失败时启用。
 
-- **scope 隔离** —— 哈希链按 `H(账号, agent_mode, thinking_effort,
-  system prompt, 工具名集合)` 命名空间隔离：换账号、换模型、换推理强度、
-  改 system prompt 或工具集，都会透明地新建 thread，而不是续接到一个
-  不匹配的旧会话。
+- **scope 隔离** —— 哈希链按 `H(账号, agent_mode, system prompt)` 命名空间
+  隔离：换账号、换模型或改 system prompt，都会透明地新建 thread，而不是续接到
+  一个不匹配的旧会话。思考强度是逐轮字段，不会拆分 thread；工具按 thread 记录，
+  会话中途新增工具（Claude Code 的 ToolSearch、skill）时继续用原 thread，只补发
+  新工具的说明。
+- **失败不丢 thread** —— 复用的这一轮出错或被取消（499、内容过滤、空闲超时）时，
+  原 thread 会放回缓存，下一次请求照样续接。会话键兜底只在新的工具结果对应的是
+  这个 thread 发出的调用时才续接，共用同一个会话 ID 的并行子代理不会串到彼此的
+  thread 上。
 - **编辑/分叉检测** —— 更早消息的任何改动都会改变哈希，所以被编辑或
   分叉的历史永远不会误续接；只有纯追加的尾部才合格。缓存条目使用即
   销毁（single-use），客户端重试也不会重放一个 turn。

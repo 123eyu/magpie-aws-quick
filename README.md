@@ -91,9 +91,16 @@ continuations through three tiers, most precise first:
 Tier order matters: verified content matches always win; the session key
 is only used when both content tiers fail.
 - **Scope isolation** — the chain is namespaced by
-  `H(account, agent_mode, thinking_effort, system prompt, tool names)`:
-  switching accounts, models, effort, system prompt, or the toolset
-  starts a fresh thread rather than resuming a stale one.
+  `H(account, agent_mode, system prompt)`: switching accounts, models or
+  system prompt starts a fresh thread rather than resuming a stale one.
+  Thinking effort is a per-turn field and doesn't split threads; tools are
+  tracked per thread, so a tool added mid-session (Claude Code's ToolSearch,
+  skills) keeps the thread and only the new tool's spec is sent.
+- **Failure-safe** — a reused turn that errors or is cancelled (499, content
+  filter, idle timeout) puts its thread back, so the next request still
+  continues it. The session-key fallback only resumes when the new tool
+  results answer calls that thread made, so parallel subagents sharing one
+  session id never splice into each other's threads.
 - **Edit & branch detection** — any change to earlier messages alters the
   hashes, so edited or branched history can never silently continue a
   thread that doesn't match; only append-only tails qualify. Cached
