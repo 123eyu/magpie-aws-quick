@@ -1240,3 +1240,39 @@ test('<sources> citations are stripped; a broken <tool_call> is reported and res
     await f.close()
   }
 })
+
+test('a reused turn cancelled by the client puts the thread back for the next request', async () => {
+  let calls = 0
+  const f = await startFakeQuick({
+    script: (p) => {
+      calls++
+      return calls === 2 ? [] : defaultScript(p) // turn 2 goes silent until aborted
+    },
+  })
+  const mgr = fakeMgr(f)
+  const sessions = createSessionStore()
+  const opts = { identity: 'restore-acct', idleTimeoutMs: 60_000 }
+  const u1 = { role: 'user', content: 'remember teal' }
+  try {
+    const r1 = await handleChatCompletions({ body: { model: 'fast', messages: [u1] }, outpostMgr: mgr, sessions, options: opts })
+    const reply = (await r1.json()).choices[0].message.content
+    const convo2 = [u1, { role: 'assistant', content: reply }, { role: 'user', content: 'what color?' }]
+
+    const ac = new AbortController()
+    const p2 = handleChatCompletions({ body: { model: 'fast', messages: convo2 }, outpostMgr: mgr, sessions, options: opts, signal: ac.signal })
+    await sleep(200)
+    ac.abort()
+    assert.equal((await p2).status, 499)
+
+    // client retries the same request: it must land on the original thread
+    const r3 = await handleChatCompletions({ body: { model: 'fast', messages: convo2 }, outpostMgr: mgr, sessions, options: opts })
+    assert.equal(r3.status, 200)
+    await r3.json()
+    const [t1, t2, t3] = f.state.userMessages.slice(-3)
+    assert.equal(t2.threadId, t1.threadId)
+    assert.equal(t3.threadId, t1.threadId, 'cancelled turn must not strand the thread')
+    assert.equal(t3.payload.text, 'what color?')
+  } finally {
+    await f.close()
+  }
+})
