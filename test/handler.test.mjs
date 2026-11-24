@@ -1276,3 +1276,34 @@ test('a reused turn cancelled by the client puts the thread back for the next re
     await f.close()
   }
 })
+
+test('a tool added mid-session or an effort change keeps the thread; only the new tool spec is sent', async () => {
+  const f = await startFakeQuick({})
+  const mgr = fakeMgr(f)
+  const sessions = createSessionStore()
+  const opts = { identity: 'toolset-acct' }
+  const u1 = { role: 'user', content: 'start' }
+  try {
+    const r1 = await handleChatCompletions({ body: { model: 'smart', reasoning_effort: 'high', tools: [fnTool('Read')], messages: [u1] }, outpostMgr: mgr, sessions, options: opts })
+    const a1 = (await r1.json()).choices[0].message.content
+    const convo2 = [u1, { role: 'assistant', content: a1 }, { role: 'user', content: 'next' }]
+    // ToolSearch-style: a new tool appears, and the effort changes
+    const r2 = await handleChatCompletions({ body: { model: 'smart', reasoning_effort: 'low', tools: [fnTool('Read'), fnTool('CronCreate')], messages: convo2 }, outpostMgr: mgr, sessions, options: opts })
+    const a2 = (await r2.json()).choices[0].message.content
+    const [t1, t2] = f.state.userMessages.slice(-2)
+    assert.equal(t2.threadId, t1.threadId, 'toolset/effort change must not start a new thread')
+    assert.match(t2.payload.text, /\[Client tool calling\][\s\S]*CronCreate/, 'full spec for the added tool')
+    assert.ok(!/"name":"Read"|### Read|- Read:/.test(t2.payload.text.split('[Client tool calling — reminder]')[0]), 'no full spec re-sent for Read')
+    assert.match(t2.payload.text, /reminder[\s\S]*Read, CronCreate/)
+
+    // a third turn with the same tools sends only the reminder
+    const convo3 = [...convo2, { role: 'assistant', content: a2 }, { role: 'user', content: 'again' }]
+    const r3 = await handleChatCompletions({ body: { model: 'smart', tools: [fnTool('Read'), fnTool('CronCreate')], messages: convo3 }, outpostMgr: mgr, sessions, options: opts })
+    await r3.json()
+    const t3 = f.state.userMessages.at(-1)
+    assert.equal(t3.threadId, t1.threadId)
+    assert.ok(!t3.payload.text.includes('[Client tool calling]\n'), 'no full spec once every tool is known')
+  } finally {
+    await f.close()
+  }
+})
