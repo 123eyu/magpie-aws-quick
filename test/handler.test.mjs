@@ -140,12 +140,19 @@ test('inline images go to user_message.attachments and shrink the text budget', 
   assert.ok(p.text.includes('what is this?'))
 })
 
-test('images too big for the frame are skipped with a note, not sent', async () => {
+test('images too big for the frame that cannot be uploaded are skipped with a note, not sent', async () => {
   const img = 'Z'.repeat(80 * 1024)
-  await req({
-    model: 'fast',
-    messages: [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: `data:image/png;base64,${img}` } }] }],
+  const calls = []
+  const res = await handleChatCompletions({
+    body: {
+      model: 'fast',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: `data:image/png;base64,${img}` } }] }],
+    },
+    outpostMgr,
+    options: { identity: 'test-acct', log: () => {}, fetchImpl: uploadFetch(calls, { failUpload: true }) },
   })
+  await res.json()
+  assert.equal(calls.length, 1, 'upload was attempted (every backend uploads now)')
   const p = fake.state.userMessages.at(-1).payload
   assert.equal(p.attachments, undefined)
   assert.ok(p.text.includes('1 image(s) not delivered'))
@@ -682,9 +689,9 @@ test('failed image upload still answers 200 with a not-delivered note', async ()
   }
 })
 
-test('non-direct outpost keeps large images inline-only (no upload calls)', async () => {
+test('local outpost uploads large images too', async () => {
   const f = await startFakeQuick({})
-  let fetchCalls = 0
+  const calls = []
   try {
     const mgr = {
       ensure: async () => ({
@@ -695,14 +702,13 @@ test('non-direct outpost keeps large images inline-only (no upload calls)', asyn
     const res = await handleChatCompletions({
       body: { model: 'fast', messages: [bigImageMsg()] },
       outpostMgr: mgr,
-      options: { identity: 'no-upload-acct', fetchImpl: async () => { fetchCalls++; return j({}) } },
+      options: { identity: 'outpost-upload-acct', fetchImpl: uploadFetch(calls), log: () => {} },
     })
     assert.equal(res.status, 200)
     await res.json()
     const p = f.state.userMessages.at(-1).payload
-    assert.equal(p.attachments, undefined)
-    assert.ok(p.text.includes('1 image(s) not delivered'))
-    assert.equal(fetchCalls, 0, 'local-outpost path must not call the upload API')
+    assert.ok(calls.some((c) => c.url.includes('upload-attachment')), 'outpost session uploads through the cloud API')
+    assert.ok(!p.text.includes('not delivered'), p.text.slice(-200))
   } finally {
     await f.close()
   }
