@@ -291,6 +291,13 @@ measured `input_tokens≈67k`, `cache_read_tokens≈67k` (prompt-cache hit),
 Other `surfaceType`s (`INBOUND_MCP`, `WEB`, `TEAMS`) that would load a smaller
 toolset are rejected at the WS handshake for desktop tokens.
 
+On the local outpost, Smart did not retrieve inventory labels placed in
+`system_prompt` in tests with 124 bytes and 40 KiB of instructions. It
+retrieved the first and final labels at both sizes from `custom_prompt`.
+The adapter uses that field for caller instructions and keeps the persona
+override short. A permission review must fit its entire policy and transcript
+into the same frame.
+
 ## 6. Known pitfalls
 
 - After `session_connect`, wait for `session_established`/`connected` before
