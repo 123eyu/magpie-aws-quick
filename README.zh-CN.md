@@ -41,7 +41,7 @@ Python 后端（`quickwork-agent`，打包在 `resources/agent.zip` 里），以
    二进制帧；下行是 AWS event-stream 帧（`:event-type=rawOutputEvent`，body 里同样是
    base64 包的 inner JSON）。每 25s 发 `ping`。
 4. **协议翻译**：OpenAI 的 `messages` 渲染成 Quick 的 `text`（见下）——
-   例外是 system prompt，它走独立的 `user_message.system_prompt` 字段
+   例外是 system prompt，它走独立的 `user_message.custom_prompt` 字段
    （已实测生效）；下行的 `text_delta`/`thinking_delta`/`turn_usage`/
    `message_complete` 转成 OpenAI 的 `content`/`reasoning_content`/`usage`。
    一个 user turn 以 `message_complete`（`continuation_expected !== true`）
@@ -206,10 +206,12 @@ magpie login aws-quick              # 按提示选择登录方式
 - **会话与账号绑定**：thread 复用的 scope 里包含账号身份哈希；换号后旧 thread 自动失效重建。
 - **多窗口/并发**：同一 QuickSocket 上不同 thread 可并行 turn；同一 thread 的并发请求会被拒绝（`busy`）。
 - **消息体积**：整个 `user_message` 帧服务端上限 64KB（`text` 与
-  `system_prompt` 共享）。超大 system prompt / 工具 schema / 会话历史会自动
+  指令及附件共享）。超大 system prompt / 工具 schema / 会话历史会自动
   压缩（schema 去注解、工具规格 lite→仅名字降级、历史从旧到新裁、
   tool_result 封顶），
-  截断时回复里会带 `> [quick] …已截断` 提示。
+  普通对话的系统指令与本轮消息编码后若能放进同一帧，就会完整发送。
+  Claude Code 的 Auto 权限审核要求策略和待审记录完整放进同一帧，超限时在请求
+  Quick 前返回 HTTP 413。可使用 Claude Code 的 Manual 模式自行确认工具请求。
 - **OAuth 登录仅限 consumer/social 通道**：重放的是桌面端 `quick.aws.com/sn`
   的 `social` provider 流程。走企业 IdP 的租户如果 issuer 不是 Amazon 社交 IdP
   可能无法完成——这种情况请改用本地凭据方式。OAuth 路径会发送固定的生成设备 ID，

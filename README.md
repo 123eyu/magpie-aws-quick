@@ -55,7 +55,7 @@ What the plugin does:
    body likewise base64-wrapped inner JSON). A `ping` goes out every 25s.
 4. **Protocol translation**: OpenAI `messages` are rendered into Quick's
    `text` (below) — except the system prompt, which rides the dedicated
-   `user_message.system_prompt` field (verified live); downlink
+   `user_message.custom_prompt` field (verified live); downlink
    `text_delta`/`thinking_delta`/`turn_usage`/`message_complete` become
    OpenAI `content`/`reasoning_content`/`usage`. A user turn ends at
    `message_complete` with `continuation_expected !== true` — the same
@@ -255,11 +255,13 @@ A few plugin options tune request handling (`magpie plugin options aws-quick '{�
   any server feature that needs a connected device (local files/apps) won't
   apply.
 - **Message size**: the whole `user_message` frame is hard-capped at 64 KB
-  server-side (`text` + `system_prompt` share it). Oversized system prompts /
+  server-side (text, instructions and attachments share it). Oversized system prompts /
   tool schemas / history are compacted automatically (schema de-annotation,
   tool-spec lite then names-only fallback, oldest-first history trimming,
-  capped tool results); truncation is surfaced as a `> [quick] …truncated`
-  note.
+  capped tool results). Ordinary chat keeps full system instructions when they fit alongside the
+  encoded turn. Claude Code Auto permission reviews require the complete policy
+  and transcript in one frame. An oversized review returns HTTP 413 before
+  contacting Quick. In Claude Code, Manual mode lets you approve tool requests.
 
 ## Security & credentials
 

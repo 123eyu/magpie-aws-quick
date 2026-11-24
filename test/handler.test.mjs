@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { startFakeQuick, defaultScript } from './helpers/fake-quick.mjs'
 import { PLAIN_TEXT_NOTE, TOOLS_STILL_APPLY, handleChatCompletions, handleModels } from '../lib/handler.mjs'
 import { createSessionStore } from '../lib/sessions.mjs'
-import { byteLen } from '../lib/translate.mjs'
+import { byteLen, frameBytes, UPSTREAM_TEXT_LIMIT } from '../lib/translate.mjs'
 import { OutpostError } from '../lib/outpost.mjs'
 
 let fake
@@ -99,7 +99,7 @@ test('agent_mode is sent per request model; unknown models default to smart', as
   assert.ok(msgs.at(-1).payload.thread_id)
 })
 
-test('system prompt rides the system_prompt field; history renders into text', async () => {
+test('system instructions ride in custom_prompt while history renders into text', async () => {
   await req({
     model: 'fast',
     messages: [
@@ -110,7 +110,8 @@ test('system prompt rides the system_prompt field; history renders into text', a
     ],
   })
   const p = fake.state.userMessages.at(-1).payload
-  assert.equal(p.system_prompt, 'be terse')
+  assert.ok(p.custom_prompt.endsWith('\n\nbe terse'))
+  assert.ok(!p.text.includes('be terse'))
   assert.ok(!p.text.includes('[system instructions]'))
   assert.ok(p.text.includes('user: q1'))
   assert.ok(p.text.includes('assistant: a1'))
@@ -151,7 +152,7 @@ test('images too big for the frame are skipped with a note, not sent', async () 
 })
 
 test('system prompt shares the 64KB frame budget with text', async () => {
-  const bigSys = 'S'.repeat(40 * 1024) // over SYSTEM_PROMPT_CAP → capped at 32KB
+  const bigSys = 'S'.repeat(40 * 1024)
   const bigUser = 'U'.repeat(30 * 1024)
   await req({
     model: 'fast',
@@ -161,10 +162,9 @@ test('system prompt shares the 64KB frame budget with text', async () => {
     ],
   })
   const p = fake.state.userMessages.at(-1).payload
-  // system_prompt capped at 32KB; text+preamble must leave the frame under cap
-  assert.ok(byteLen(p.system_prompt) <= 32 * 1024 + 64)
-  assert.ok(p.system_prompt.endsWith('…[truncated]'))
-  assert.ok(byteLen(p.text) <= 60 * 1024 - byteLen(p.system_prompt))
+  assert.ok(p.custom_prompt.endsWith('…[truncated]'))
+  assert.ok(p.custom_prompt.includes('S'.repeat(32 * 1024)))
+  assert.ok(frameBytes(p.thread_id, p) <= UPSTREAM_TEXT_LIMIT)
 })
 
 test('huge system prompt + large toolset still delivers the user question', async () => {
@@ -193,7 +193,7 @@ test('huge system prompt + large toolset still delivers the user question', asyn
   const p = fake.state.userMessages.at(-1).payload
   assert.ok(p.text.includes('FINAL_QUESTION_MARKER'), 'user question must survive the frame cap')
   assert.ok(p.text.includes('[Client tool calling]'), 'tool convention must survive too')
-  assert.ok(byteLen(p.system_prompt) + byteLen(p.text) <= 62 * 1024)
+  assert.ok(frameBytes(p.thread_id, p) <= UPSTREAM_TEXT_LIMIT)
 })
 
 test('thread reuse: extended conversation continues the same thread with delta only', async () => {

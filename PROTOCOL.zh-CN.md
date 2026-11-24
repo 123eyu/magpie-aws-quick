@@ -271,6 +271,11 @@ OpenAI `tool_calls`。
 约 62k 的核心部分（内置工具定义等）始终存在。会加载更小工具集的其它
 `surfaceType`（`INBOUND_MCP`、`WEB`、`TEAMS`）用桌面端 token 握手时会被拒绝。
 
+本地 outpost 实测使用 Smart 时，指令长度为 124 字节和 40 KiB 两种情况下，
+模型都未能从 `system_prompt` 复述测试标签，改用 `custom_prompt` 后均能复述
+开头和末尾的两个标签。适配器使用后者传入调用方的指令，并保留简短的人设覆盖。
+权限审核要求完整策略和待审记录能放进同一帧。
+
 ## 6. 已知坑
 
 - `session_connect` 后要等 `session_established`/`connected` 再发 `user_message`，
