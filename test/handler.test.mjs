@@ -1342,3 +1342,31 @@ test('two native client calls in one step are both salvaged, even if the first r
     await f.close()
   }
 })
+
+test('session-key fallback does not splice one subagent\'s tool results into a sibling\'s thread', async () => {
+  // Subagents of one Claude Code session share the gateway session id and the
+  // system prompt; when a strict match misses (e.g. the request moved to
+  // another account and back), the id alone must not pick a sibling thread.
+  const sessions = createSessionStore()
+  const tools = [fnTool('Read')]
+  const call = (messages) => handleChatCompletions({
+    body: { model: 'fast', messages, tools },
+    outpostMgr: fakeMgr(fake),
+    sessions,
+    options: { identity: 'sub-acct', sessionKey: 'cc-session-1', log: () => {} },
+  })
+  // sibling subagent B answers last, so it owns the session-key entry
+  await (await call([{ role: 'user', content: 'agent A: read a.py' }])).json()
+  await (await call([{ role: 'user', content: 'agent B: read b.py' }])).json()
+  const before = fake.state.userMessages.length
+  // A's follow-up with a rewritten head (strict and fuzzy miss) carrying a
+  // result for a call id the B thread never made
+  const r = await call([
+    { role: 'user', content: 'agent A: read a.py (rewritten)' },
+    { role: 'assistant', content: '', tool_calls: [{ id: 'call_from_A', type: 'function', function: { name: 'Read', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'call_from_A', content: 'def parse_csv(): ...' },
+  ])
+  await r.json()
+  const [tB, tA2] = [fake.state.userMessages[before - 1], fake.state.userMessages[before]]
+  assert.notEqual(tA2.threadId, tB.threadId, 'must not resume the sibling thread')
+})
