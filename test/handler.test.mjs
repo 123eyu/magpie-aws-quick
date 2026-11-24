@@ -1307,3 +1307,32 @@ test('a tool added mid-session or an effort change keeps the thread; only the ne
     await f.close()
   }
 })
+
+test('two native client calls in one step are both salvaged, even if the first result lands early', async () => {
+  const f = await startFakeQuick({
+    script: () => [
+      { type: 'tool_start', payload: { tool_name: 'Edit', tool_id: 'e1', arguments: {} } },
+      { type: 'tool_start', payload: { tool_name: 'Edit', tool_id: 'e2', arguments: {} } },
+      { type: 'tool_arguments', payload: { tool_id: 'e1', tool_name: 'Edit', arguments: { file_path: 'a.txt', content: 'A' } } },
+      // Quick rejects the first before the second's arguments arrive
+      { type: 'tool_result', payload: { tool_id: 'e1', tool_name: 'Edit', error: 'Unknown tool: Edit' } },
+      { type: 'tool_arguments', payload: { tool_id: 'e2', tool_name: 'Edit', arguments: { file_path: 'b.txt', content: 'B' } } },
+      { type: 'tool_result', payload: { tool_id: 'e2', tool_name: 'Edit', error: 'Unknown tool: Edit' } },
+      { type: 'text_delta', payload: { delta: 'rewritten as text' } },
+      { type: 'message_complete', payload: { text: 'rewritten as text' } },
+    ],
+  })
+  try {
+    const res = await handleChatCompletions({
+      body: { model: 'fast', messages: [{ role: 'user', content: 'edit both' }], tools: [fnTool('Edit')] },
+      outpostMgr: fakeMgr(f),
+      options: { identity: 'multi-salvage-acct' },
+    })
+    const j = await res.json()
+    const calls = j.choices[0].message.tool_calls.map((c) => JSON.parse(c.function.arguments).file_path)
+    assert.deepEqual(calls, ['a.txt', 'b.txt'])
+    assert.ok(!String(j.choices[0].message.content ?? '').includes('rewritten'), 'rewrite step is cut')
+  } finally {
+    await f.close()
+  }
+})
