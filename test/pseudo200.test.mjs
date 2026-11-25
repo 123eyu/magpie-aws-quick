@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { startFakeQuick, defaultScript } from './helpers/fake-quick.mjs'
 import { handleChatCompletions } from '../lib/handler.mjs'
-import { isPseudo200UsageLimitText, isPseudo200UsageLimitPrefix } from '../lib/handler.mjs'
+import { isPseudo200UsageLimitText, isPseudo200UsageLimitPrefix, resetQuotaWindows, quotaCooldownLeft } from '../lib/handler.mjs'
 
 const QUOTA_SENTENCE = "You've reached your usage limit. Check your profile for details."
 
@@ -122,6 +122,7 @@ test('usage_limit error frame maps to 429', async () => {
 })
 
 test('a reply that quotes the quota sentence then continues passes through untouched', async () => {
+  resetQuotaWindows()
   mode = 'quote-continuation'
   const res = await req({ model: 'fast', messages: [{ role: 'user', content: 'explain the error' }] })
   assert.equal(res.status, 200)
@@ -131,9 +132,36 @@ test('a reply that quotes the quota sentence then continues passes through untou
 })
 
 test('normal replies are unaffected by the probe', async () => {
+  resetQuotaWindows()
   mode = 'default'
   const res = await req({ model: 'fast', messages: [{ role: 'user', content: 'capital of France?' }] })
   assert.equal(res.status, 200)
   const json = await res.json()
   assert.ok(json.choices[0].message.content.startsWith('echo:'))
+})
+
+test('after a quota failure the account fails fast (429) without touching upstream', async () => {
+  resetQuotaWindows()
+  mode = 'quota-stream'
+  const before = fake.state.userMessages.length
+  const r1 = await req({ model: 'fast', messages: [{ role: 'user', content: 'hi' }] })
+  assert.equal(r1.status, 429)
+  assert.ok(quotaCooldownLeft('test-acct') > 0, 'exhaustion window recorded')
+  // next request never reaches upstream — zero new user_messages
+  const r2 = await req({ model: 'fast', messages: [{ role: 'user', content: 'again' }] })
+  assert.equal(r2.status, 429)
+  assert.match((await r2.json()).error.message, /resumes in/i)
+  assert.equal(fake.state.userMessages.length, before + 1, 'no extra upstream turn burned')
+  resetQuotaWindows()
+  mode = 'default'
+})
+
+test('exhaustionMinutes prefers session resume_in_minutes, then monthly reset', async () => {
+  const { exhaustionMinutes } = await import('../lib/handler.mjs')
+  assert.equal(exhaustionMinutes({ session: { exhausted: true, resumeInMinutes: 42 }, monthly: { exhausted: false } }), 42)
+  assert.equal(exhaustionMinutes({ session: { exhausted: true, resumeInMinutes: 0 } }), 30)
+  const monthlyOnly = exhaustionMinutes({ session: { exhausted: false }, monthly: { exhausted: true, resetsAt: new Date(Date.now() + 3600_000).toISOString() } })
+  assert.ok(monthlyOnly > 55 && monthlyOnly <= 60)
+  assert.equal(exhaustionMinutes({ session: { exhausted: false }, monthly: { exhausted: false } }), 0)
+  assert.equal(exhaustionMinutes(null), 0)
 })
