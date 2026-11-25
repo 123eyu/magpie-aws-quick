@@ -191,3 +191,38 @@ test('sources stripper drops only citation-only blocks outside code; XML <source
   assert.equal(run(big, 97), big)
 })
 
+test('end() salvages a complete JSON block truncated before its close tag', () => {
+  // The model finished the JSON but token truncation ate </tool_call>.
+  // Leading text was already flushed by push(); end() must not drop the call.
+  const p = createToolCallParser()
+  const r = p.push('answering<tool_call>{"name":"Bash","arguments":{"command":"echo hi"}}')
+  assert.equal(r.text, 'answering')
+  const end = p.end()
+  assert.equal(end.dropped, undefined) // not dropped
+  assert.equal(end.calls.length, 1)
+  assert.equal(end.calls[0].name, 'Bash')
+  assert.equal(end.calls[0].arguments.command, 'echo hi')
+})
+
+test('end() still drops a block truncated mid-string', () => {
+  // No complete JSON object can be recovered → fall back to dropped.
+  const p = createToolCallParser()
+  p.push('<tool_call>{"name":"Bash","arguments":{"command":"echo h')
+  const end = p.end()
+  assert.equal(end.dropped, 'unterminated')
+  assert.equal(end.calls.length, 0)
+})
+
+test('end() salvages a complete JSON block split across deltas at EOS', () => {
+  const p = createToolCallParser()
+  let r = p.push('text <tool_call>{"name":"Read"')
+  assert.equal(r.calls.length, 0)
+  r = p.push(',"arguments":{"file_path":"a.txt"}}')
+  assert.equal(r.calls.length, 0) // still no close tag in stream
+  const end = p.end()
+  assert.equal(end.dropped, undefined)
+  assert.equal(end.calls.length, 1)
+  assert.equal(end.calls[0].name, 'Read')
+  assert.equal(end.calls[0].arguments.file_path, 'a.txt')
+})
+
