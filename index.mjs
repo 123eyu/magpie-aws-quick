@@ -333,7 +333,11 @@ export const AwsQuickAuthPlugin = async (_input, options) => {
 
     auth: {
       provider: PROVIDER,
-      maxConcurrency: 1,
+      // QuickSocket multiplexes turns on one connection by thread_id (verified
+      // live: 8 concurrent turns all finished in parallel), so per-account
+      // serialization here only starved single-account users — parallel
+      // subagents and auto-mode checks queued FIFO behind the longest turn.
+      maxConcurrency: 8,
       methods: [
         oauthSignIn({
           label: '账号登录（浏览器 OAuth，无需桌面端）',

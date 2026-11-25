@@ -297,8 +297,12 @@ retrieved the first and final labels at both sizes from `custom_prompt`.
 Re-checked on direct (OAuth) sessions with two accounts, Smart and Fast:
 labels in `system_prompt` were recalled 0/8 times, in `custom_prompt` 8/8.
 The adapter uses that field for caller instructions and keeps the persona
-override short. A permission review must fit its entire policy and transcript
-into the same frame.
+override short. A permission review keeps its entire policy: when the policy
+exceeds the frame cap it is primed verbatim into a dedicated thread's history
+as a few user_message turns (cached per policy hash, rotated after ~40 reviews
+or ~384 KB of transcripts, small pool for concurrent checks), and the review
+turn carries only the transcript plus a short instruction. A policy beyond
+~8 chunks (~400 KB) still fails closed with HTTP 413.
 
 ## 6. Known pitfalls
 
