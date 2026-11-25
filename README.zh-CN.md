@@ -196,6 +196,14 @@ magpie login aws-quick              # 按提示选择登录方式
 
 ## 已知限制
 
+- **用量超限转为 429，并快速故障转移。** Quick 同时执行滚动 session
+  桶（每个时间窗内的代理运行分钟数）和月度桶。账号用尽时，运行时有时
+  不报错，而是返回一条完整内容只有"You've reached your usage limit…"
+  的普通助手消息——插件会识别这种伪 200（仅整句精确匹配，引用该句的
+  正常回复不受影响），转成 `rate_limit_error`/429。随后查询该账号
+  `profile/usage` 里 session 桶的 `resume_in_minutes`，在窗口恢复前
+  直接快速返回 429，不再每次白烧一轮上游请求，magpie 会立即切到
+  其他账号。
 - **工具调用是文本约定模拟**：Quick 的 agent 在服务端自带工具链（浏览器、本地文件、MCP 等），
   `tool_start`/`tool_result` 等事件由它自己执行、客户端只观测，`message_complete.tool_calls`
   恒为空。客户端传入的 OpenAI `tools` 通过提示词注入为 `<tool_call>{json}</tool_call>`
