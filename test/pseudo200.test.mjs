@@ -146,7 +146,7 @@ test('after a quota failure the account fails fast (429) without touching upstre
   const before = fake.state.userMessages.length
   const r1 = await req({ model: 'fast', messages: [{ role: 'user', content: 'hi' }] })
   assert.equal(r1.status, 429)
-  assert.ok(quotaCooldownLeft('test-acct') > 0, 'exhaustion window recorded')
+  assert.ok(await quotaCooldownLeft('test-acct') > 0, 'exhaustion window recorded')
   // next request never reaches upstream — zero new user_messages
   const r2 = await req({ model: 'fast', messages: [{ role: 'user', content: 'again' }] })
   assert.equal(r2.status, 429)
