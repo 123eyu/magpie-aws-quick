@@ -299,3 +299,28 @@ test('renderDelta gives the current turn head and tail, not just the head', () =
   assert.ok(out.includes('TASK-HEAD') && out.includes('TASK-TAIL'))
   assert.ok(byteLen(out) <= 60 * 1024)
 })
+
+test('renderDelta: foreign failover turns render as transcript (#16)', () => {
+  const delta = [
+    { role: 'user', content: 'new decision' },
+    { role: 'assistant', content: 'foreign reply', tool_calls: [{ id: 'c1', function: { name: 'Write', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'c1', content: 'file written' },
+    { role: 'user', content: 'continue' },
+  ]
+  const out = renderDelta(delta)
+  // header note explains the injected history
+  assert.ok(out.startsWith('[since your last reply the conversation continued elsewhere'))
+  // earlier user messages are transcript-prefixed, assistant lines rendered with calls
+  assert.ok(out.includes('user: new decision'))
+  assert.ok(out.includes('assistant: foreign reply'))
+  assert.ok(out.includes('[called tool Write('))
+  assert.ok(out.includes('file written'))
+  // the final user message stays bare — it is the current turn, not history
+  assert.ok(out.trimEnd().endsWith('continue'))
+  assert.ok(!out.includes('user: continue'))
+})
+
+test('renderDelta: clean deltas never get the foreign treatment', () => {
+  const out = renderDelta([{ role: 'user', content: 'plain question' }])
+  assert.equal(out, 'plain question')
+})

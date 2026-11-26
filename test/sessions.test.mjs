@@ -58,7 +58,7 @@ test('findContinuation matches an extended conversation', () => {
   assert.deepEqual(cont.delta, [{ role: 'user', content: 'what now' }])
 })
 
-test('findContinuation rejects edited history and assistant deltas', () => {
+test('findContinuation rejects edited history but accepts foreign assistant deltas (#16)', () => {
   const store = createSessionStore()
   const convo1 = [{ role: 'user', content: 'hi' }]
   const h1 = chainHashes(scope, convo1)
@@ -71,18 +71,44 @@ test('findContinuation rejects edited history and assistant deltas', () => {
     { role: 'user', content: 'next' },
   ]
   assert.equal(findContinuation(store, chainHashes(scope, edited), edited), undefined)
+})
 
-  // delta containing an assistant message → rejected (can't append mid-turn)
-  const weird = [
+test('findContinuation marks failover deltas foreign instead of rejecting (#16)', () => {
+  const store = createSessionStore()
+  const convo1 = [{ role: 'user', content: 'hi' }]
+  const h1 = chainHashes(scope, convo1)
+  store.set(extendHash(h1[1], replyMessage('hello')), { threadId: 't' })
+
+  // failover shape: after our reply the conversation continued on ANOTHER
+  // account — delta holds foreign assistant turns between user messages.
+  // The hash hit proves the exact position, so the continuation must survive.
+  const failover = [
     { role: 'user', content: 'hi' },
     { role: 'assistant', content: 'hello' },
-    { role: 'assistant', content: 'another' },
+    { role: 'user', content: 'new decision' },
+    { role: 'assistant', content: 'foreign reply' },
+    { role: 'user', content: 'continue' },
+  ]
+  const cont = findContinuation(store, chainHashes(scope, failover), failover)
+  assert.ok(cont, 'strict hit must not be rejected for foreign assistant content')
+  assert.equal(cont.foreign, true)
+  assert.equal(cont.delta.length, 3)
+  assert.equal(cont.delta[cont.delta.length - 1].content, 'continue')
+})
+
+test('findContinuation: clean deltas are not marked foreign', () => {
+  const store = createSessionStore()
+  const convo1 = [{ role: 'user', content: 'hi' }]
+  const h1 = chainHashes(scope, convo1)
+  store.set(extendHash(h1[1], replyMessage('hello')), { threadId: 't' })
+  const normal = [
+    { role: 'user', content: 'hi' },
+    { role: 'assistant', content: 'hello' },
     { role: 'user', content: 'next' },
   ]
-  // findContinuation scans i where convo[i-1] is assistant; the only stored key
-  // is after 'hello' — at i=2 convo[1] is assistant but delta=[assistant,user]
-  // contains assistant → rejected. A later i has no stored key.
-  assert.equal(findContinuation(store, chainHashes(scope, weird), weird), undefined)
+  const cont = findContinuation(store, chainHashes(scope, normal), normal)
+  assert.ok(cont)
+  assert.equal(cont.foreign, false)
 })
 
 test('store TTL and LRU eviction', () => {
