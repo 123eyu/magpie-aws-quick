@@ -150,7 +150,7 @@ test('after a quota failure the account fails fast (429) without touching upstre
   // next request never reaches upstream — zero new user_messages
   const r2 = await req({ model: 'fast', messages: [{ role: 'user', content: 'again' }] })
   assert.equal(r2.status, 429)
-  assert.match((await r2.json()).error.message, /resumes in/i)
+  assert.match((await r2.json()).error.message, /resets in \d+m/i)
   assert.equal(fake.state.userMessages.length, before + 1, 'no extra upstream turn burned')
   resetQuotaWindows()
   mode = 'default'
